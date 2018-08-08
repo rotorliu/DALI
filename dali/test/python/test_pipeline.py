@@ -16,9 +16,9 @@ from nvidia.dali.pipeline import Pipeline
 import nvidia.dali.ops as ops
 import nvidia.dali.types as types
 import nvidia.dali.tfrecord as tfrec
-import numpy as np
 from timeit import default_timer as timer
 import numpy as np
+from numpy.testing import assert_array_equal, assert_allclose
 
 caffe_db_folder = "/data/imagenet/train-lmdb-256x256"
 
@@ -217,6 +217,50 @@ def test_seed():
             img_chw = img_chw_test
         assert(np.sum(np.abs(img_chw - img_chw_test)) == 0)
 
+def test_seed_serialize():
+    batch_size = 64
+    class HybridPipe(Pipeline):
+        def __init__(self, batch_size, num_threads, device_id):
+            super(HybridPipe, self).__init__(batch_size,
+                                             num_threads,
+                                             device_id,
+                                             seed = 12)
+            self.input = ops.CaffeReader(path = caffe_db_folder, random_shuffle = True)
+            self.decode = ops.nvJPEGDecoder(device = "mixed", output_type = types.RGB)
+            self.cmnp = ops.CropMirrorNormalize(device = "gpu",
+                                                output_dtype = types.FLOAT,
+                                                crop = (224, 224),
+                                                image_type = types.RGB,
+                                                mean = [128., 128., 128.],
+                                                std = [1., 1., 1.])
+            self.coin = ops.CoinFlip()
+            self.uniform = ops.Uniform(range = (0.0,1.0))
+            self.iter = 0
+
+        def define_graph(self):
+            self.jpegs, self.labels = self.input()
+            images = self.decode(self.jpegs)
+            mirror = self.coin()
+            output = self.cmnp(images, mirror = mirror, crop_pos_x = self.uniform(), crop_pos_y = self.uniform())
+            return (output, self.labels)
+
+        def iter_setup(self):
+            pass
+    n = 30
+    orig_pipe = HybridPipe(batch_size=batch_size,
+                           num_threads=2,
+                           device_id = 0)
+    s = orig_pipe.serialize()
+    for i in range(50):
+        pipe = Pipeline()
+        pipe.deserialize_and_build(s)
+        pipe_out = pipe.run()
+        pipe_out_cpu = pipe_out[0].asCPU()
+        img_chw_test = pipe_out_cpu.at(n)
+        if i == 0:
+            img_chw = img_chw_test
+        assert(np.sum(np.abs(img_chw - img_chw_test)) == 0)
+
 def test_rotate():
     class HybridPipe(Pipeline):
         def __init__(self, batch_size, num_threads, device_id):
@@ -306,3 +350,105 @@ def test_warpaffine():
         diff = out - dali_output
         diff[dali_output==[128.,128.,128.]] = 0
         assert(np.max(np.abs(diff)/255.0) < 0.025)
+
+def test_type_conversion():
+    class HybridPipe(Pipeline):
+        def __init__(self, batch_size, num_threads, device_id):
+            super(HybridPipe, self).__init__(batch_size, num_threads, device_id, seed = 12)
+            self.input = ops.CaffeReader(path = caffe_db_folder, random_shuffle = True)
+            self.decode = ops.nvJPEGDecoder(device = "mixed", output_type = types.RGB)
+            self.cmnp_all = ops.CropMirrorNormalize(device = "gpu",
+                                                    output_dtype = types.FLOAT,
+                                                    output_layout = types.NHWC,
+                                                    crop = (224, 224),
+                                                    image_type = types.RGB,
+                                                    mean = [128., 128., 128.],
+                                                    std = [1., 1., 1.])
+            self.cmnp_int = ops.CropMirrorNormalize(device = "gpu",
+                                                    output_dtype = types.FLOAT,
+                                                    output_layout = types.NHWC,
+                                                    crop = (224, 224),
+                                                    image_type = types.RGB,
+                                                    mean = [128, 128, 128],
+                                                    std = [1., 1, 1])  # Left 1 of the arguments as float to test whether mixing types works
+            self.cmnp_1arg = ops.CropMirrorNormalize(device = "gpu",
+                                                     output_dtype = types.FLOAT,
+                                                     output_layout = types.NHWC,
+                                                     crop = (224, 224),
+                                                     image_type = types.RGB,
+                                                     mean = 128,
+                                                     std = 1)
+            self.uniform = ops.Uniform(range = (0,1))
+
+        def define_graph(self):
+            self.jpegs, self.labels = self.input()
+            images = self.decode(self.jpegs)
+            outputs = [ None for i in range(3)]
+            crop_pos_x = self.uniform()
+            crop_pos_y = self.uniform()
+            outputs[0] = self.cmnp_all(images,
+                                       crop_pos_x = crop_pos_x,
+                                       crop_pos_y = crop_pos_y)
+            outputs[1] = self.cmnp_int(images,
+                                       crop_pos_x = crop_pos_x,
+                                       crop_pos_y = crop_pos_y)
+            outputs[2] = self.cmnp_1arg(images,
+                                        crop_pos_x = crop_pos_x,
+                                        crop_pos_y = crop_pos_y)
+            return [self.labels] + outputs
+
+    pipe = HybridPipe(batch_size=128, num_threads=2, device_id = 0)
+    pipe.build()
+    for i in range(10):
+        pipe_out = pipe.run()
+        orig_cpu = pipe_out[1].asCPU().as_tensor()
+        int_cpu  = pipe_out[2].asCPU().as_tensor()
+        arg1_cpu = pipe_out[3].asCPU().as_tensor()
+        assert_array_equal(orig_cpu, int_cpu)
+        assert_array_equal(orig_cpu, arg1_cpu)
+
+def test_crop():
+    class CMNvsCropPipe(Pipeline):
+        def __init__(self, batch_size, num_threads, device_id):
+            super(CMNvsCropPipe, self).__init__(batch_size, num_threads, device_id, seed = 12)
+            self.input = ops.CaffeReader(path = caffe_db_folder, shard_id = device_id, num_shards = 1)
+            self.decode = ops.nvJPEGDecoder(device = "mixed", output_type = types.RGB)
+            self.cmn = ops.CropMirrorNormalize(device = "gpu",
+                                                output_layout = types.NHWC,
+                                                output_dtype = types.FLOAT,
+                                                crop = (224, 224),
+                                                image_type = types.RGB,
+                                                mean = [0., 0., 0.],
+                                                std = [1., 1., 1.])
+            self.crop = ops.Crop(device = "gpu",
+                                 crop = (224, 224),
+                                 image_type = types.RGB)
+            self.uniform = ops.Uniform(range = (0.0, 1.0))
+            self.cast = ops.Cast(device = "gpu",
+                                 dtype = types.INT32)
+
+        def define_graph(self):
+            inputs, labels = self.input()
+            images = self.decode(inputs)
+            crop_x = self.uniform()
+            crop_y = self.uniform()
+            output_cmn = self.cmn(images, crop_pos_x = crop_x, crop_pos_y = crop_y)
+            output_crop = self.crop(images, crop_pos_x = crop_x, crop_pos_y = crop_y)
+            output_cmn = self.cast(output_cmn)
+            output_crop = self.cast(output_crop)
+            return (output_cmn, output_crop, labels.gpu())
+
+    batch_size = 8
+    iterations = 8
+
+    pipe = CMNvsCropPipe(batch_size=batch_size, num_threads=2, device_id = 0)
+    pipe.build()
+
+    for _ in range(iterations):
+        pipe_out = pipe.run()
+        cmn_img_batch_cpu = pipe_out[0].asCPU()
+        crop_img_batch_cpu = pipe_out[1].asCPU()
+        for b in range(batch_size):
+            img_cmn = cmn_img_batch_cpu.at(b)
+            img_crop = crop_img_batch_cpu.at(b)
+            assert(np.array_equal(img_cmn, img_crop))

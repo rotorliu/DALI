@@ -21,7 +21,7 @@ namespace dali {
 
 void Uniform::RunImpl(SupportWorkspace * ws, const int idx) {
   DALI_ENFORCE(idx == 0, "Uniform does not support multiple input sets.");
-  auto *output = ws->Output(idx);
+  auto *output = ws->Output<CPUBackend>(idx);
   output->Resize({batch_size_});
 
   float * out_data = output->template mutable_data<float>();
@@ -38,7 +38,6 @@ DALI_SCHEMA(Uniform)
   .NumInput(0)
   .NumOutput(1)
   .AddOptionalArg("range",
-      R"code(`list of float`
-      Range of produced random numbers)code", std::vector<float>({-1, 1}));
+      R"code(Range of produced random numbers.)code", std::vector<float>({-1, 1}));
 
 }  // namespace dali

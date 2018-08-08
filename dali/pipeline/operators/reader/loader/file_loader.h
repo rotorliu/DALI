@@ -99,8 +99,10 @@ class FileLoader : public Loader<CPUBackend> {
         auto p = std::make_pair(file_root_ + "/" + image_file, label);
         image_label_pairs_.push_back(p);
       }
+      DALI_ENFORCE(s.eof(), "Wrong format of file_list.");
     }
 
+    DALI_ENFORCE(Size() > 0, "No files found.");
     // first / only shard: no change needed
     if (shard_id_ == 0) return;
 

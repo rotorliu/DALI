@@ -13,6 +13,7 @@
 # limitations under the License.
 
 add_subdirectory(color)
+add_subdirectory(crop)
 add_subdirectory(decoder)
 add_subdirectory(displacement)
 add_subdirectory(fused)

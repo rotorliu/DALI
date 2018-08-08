@@ -126,41 +126,74 @@ void ExposeTensor(py::module &m) { // NOLINT
           t.ShareData(info.ptr, bytes);
           t.set_type(type);
           t.Resize(i_shape);
-        })
-    .def("shape", &Tensor<CPUBackend>::shape)
-    .def("ndim", &Tensor<CPUBackend>::ndim)
-    .def("dim", &Tensor<CPUBackend>::dim)
-    .def("resize", &Tensor<CPUBackend>::Resize)
-    .def("squeeze", &Tensor<CPUBackend>::Squeeze)
+        },
+      R"code(
+      Tensor residing in the CPU memory.
+      )code")
+    .def("shape", &Tensor<CPUBackend>::shape,
+         R"code(
+         Shape of the tensor.
+         )code")
+    .def("squeeze", &Tensor<CPUBackend>::Squeeze,
+         R"code(
+         Remove single-dimensional entries from the shape of the Tensor.
+         )code")
     .def("copy_to_external",
         [](Tensor<CPUBackend> &t, py::object p) {
           PyObject *p_ptr = p.ptr();
           PyObject *ptr_as_int = PyObject_GetAttr(p_ptr, PyUnicode_FromString("value"));
           void *ptr = PyLong_AsVoidPtr(ptr_as_int);
           CopyToExternalTensor(t, ptr);
-        })
+        },
+      "ptr"_a,
+      R"code(
+      Copy to external pointer in the CPU memory.
+
+      Parameters
+      ----------
+      ptr : ctypes.c_void_p
+            Destination of the copy.
+      )code")
     .def("dtype",
         [](Tensor<CPUBackend> &t) {
           return FormatStrFromType(t.type());
-        });
+        },
+      R"code(
+      String representing NumPy type of the Tensor.
+      )code");
 
   py::class_<Tensor<GPUBackend>>(m, "TensorGPU")
-    .def("shape", &Tensor<GPUBackend>::shape)
-    .def("ndim", &Tensor<GPUBackend>::ndim)
-    .def("dim", &Tensor<GPUBackend>::dim)
-    .def("resize", &Tensor<GPUBackend>::Resize)
-    .def("squeeze", &Tensor<GPUBackend>::Squeeze)
+    .def("shape", &Tensor<GPUBackend>::shape,
+         R"code(
+         Shape of the tensor.
+         )code")
+    .def("squeeze", &Tensor<GPUBackend>::Squeeze,
+         R"code(
+         Remove single-dimensional entries from the shape of the Tensor.
+         )code")
     .def("copy_to_external",
         [](Tensor<GPUBackend> &t, py::object p) {
           PyObject *p_ptr = p.ptr();
           PyObject *ptr_as_int = PyObject_GetAttr(p_ptr, PyUnicode_FromString("value"));
           void *ptr = PyLong_AsVoidPtr(ptr_as_int);
           CopyToExternalTensor(t, ptr);
-        })
+        },
+      "ptr"_a,
+      R"code(
+      Copy to external pointer in the GPU memory.
+
+      Parameters
+      ----------
+      ptr : ctypes.c_void_p
+            Destination of the copy.
+      )code")
     .def("dtype",
         [](Tensor<GPUBackend> &t) {
           return FormatStrFromType(t.type());
-        });
+        },
+      R"code(
+      String representing NumPy type of the Tensor.
+      )code");
 }
 
 void ExposeTensorList(py::module &m) { // NOLINT
@@ -198,7 +231,13 @@ void ExposeTensorList(py::module &m) { // NOLINT
           t.ShareData(info.ptr, bytes);
           t.set_type(type);
           t.Resize(i_shape);
-        })
+        },
+      R"code(
+      List of tensors residing in the CPU memory.
+
+      Parameters
+      ----------
+      )code")
     .def("at", [](TensorList<CPUBackend> &t, Index id) -> py::array {
           DALI_ENFORCE(IsValidType(t.type()), "Cannot produce "
               "buffer info for tensor w/ invalid type.");
@@ -220,30 +259,58 @@ void ExposeTensorList(py::module &m) { // NOLINT
               t.type().size(),
               FormatStrFromType(t.type()),
               shape.size(), shape, stride));
-        })
+        },
+      R"code(
+      Returns tensor at given position in the list.
+
+      Parameters
+      ----------
+      )code")
     .def("__len__", [](TensorList<CPUBackend> &t) {
           return t.ntensor();
         })
-    .def("is_dense_tensor", &TensorList<CPUBackend>::IsDenseTensor)
+    .def("is_dense_tensor", &TensorList<CPUBackend>::IsDenseTensor,
+      R"code(
+      Checks whether all tensors in this `TensorList` have the same shape
+      (and so the list itself can be viewed as a tensor).
+
+      For example, if `TensorList` contains `N` tensors, each with shape
+      `(H,W,C)` (with the same values of `H`, `W` and `C`), then the list
+      may be viewed as a tensor of shape `(N, H, W, C)`.
+      )code")
     .def("copy_to_external",
         [](TensorList<CPUBackend> &t, py::object p) {
           PyObject *p_ptr = p.ptr();
           PyObject *ptr_as_int = PyObject_GetAttr(p_ptr, PyUnicode_FromString("value"));
           void *ptr = PyLong_AsVoidPtr(ptr_as_int);
           CopyToExternalTensor(&t, ptr);
-        })
-    .def("as_tensor",
-        [](TensorList<CPUBackend> &t) -> Tensor<CPUBackend>* {
-          Tensor<CPUBackend> * ret = new Tensor<CPUBackend>();
-          ret->ShareData(&t);
-          return ret;
-        }, py::return_value_policy::take_ownership);
+        },
+      R"code(
+      Copy the contents of this `TensorList` to an external pointer
+      (of type `ctypes.c_void_p`) residing in CPU memory.
+
+      This function is used internally by plugins to interface with
+      tensors from supported Deep Learning frameworks.
+
+      Parameters
+      ----------
+      )code")
+    .def("as_tensor", &TensorList<CPUBackend>::AsTensor,
+      R"code(
+      Returns a tensor that is a view of this `TensorList`.
+
+      This function can only be called if `is_dense_tensor` returns `True`.
+      )code",
+      py::return_value_policy::reference_internal);
 
   py::class_<TensorList<GPUBackend>>(m, "TensorListGPU", py::buffer_protocol())
     .def("__init__", [](TensorList<GPUBackend> &t) {
           // Construct a default TensorList on GPU
           new (&t) TensorList<GPUBackend>;
-        })
+        },
+      R"code(
+      List of tensors residing in the GPU memory.
+      )code")
     .def("asCPU", [](TensorList<GPUBackend> &t) -> TensorList<CPUBackend>* {
           TensorList<CPUBackend> * ret = new TensorList<CPUBackend>();
           UserStream * us = UserStream::Get();
@@ -251,24 +318,47 @@ void ExposeTensorList(py::module &m) { // NOLINT
           ret->Copy(t, s);
           CUDA_CALL(cudaStreamSynchronize(s));
           return ret;
-        }, py::return_value_policy::take_ownership)
+        },
+      R"code(
+      Returns a `TensorListCPU` object being a copy of this `TensorListGPU`.
+      )code",
+      py::return_value_policy::take_ownership)
     .def("__len__", [](TensorList<GPUBackend> &t) {
           return t.ntensor();
         })
-    .def("is_dense_tensor", &TensorList<GPUBackend>::IsDenseTensor)
+    .def("is_dense_tensor", &TensorList<GPUBackend>::IsDenseTensor,
+      R"code(
+      Checks whether all tensors in this `TensorList` have the same shape
+      (and so the list itself can be viewed as a tensor).
+
+      For example, if `TensorList` contains `N` tensors, each with shape
+      `(H,W,C)` (with the same values of `H`, `W` and `C`), then the list
+      may be viewed as a tensor of shape `(N, H, W, C)`.
+      )code")
     .def("copy_to_external",
         [](TensorList<GPUBackend> &t, py::object p) {
           PyObject *p_ptr = p.ptr();
           PyObject *ptr_as_int = PyObject_GetAttr(p_ptr, PyUnicode_FromString("value"));
           void *ptr = PyLong_AsVoidPtr(ptr_as_int);
           CopyToExternalTensor(&t, ptr);
-        })
-    .def("as_tensor",
-        [](TensorList<GPUBackend> &t) -> Tensor<GPUBackend>* {
-          Tensor<GPUBackend> * ret = new Tensor<GPUBackend>();
-          ret->ShareData(&t);
-          return ret;
-        }, py::return_value_policy::take_ownership);
+        },
+      R"code(
+      Copy the contents of this `TensorList` to an external pointer
+      (of type `ctypes.c_void_p`) residing in CPU memory.
+
+      This function is used internally by plugins to interface with
+      tensors from supported Deep Learning frameworks.
+
+      Parameters
+      ----------
+      )code")
+    .def("as_tensor", &TensorList<GPUBackend>::AsTensor,
+      R"code(
+      Returns a tensor that is a view of this `TensorList`.
+
+      This function can only be called if `is_dense_tensor` returns `True`.
+      )code",
+      py::return_value_policy::reference_internal);
 }
 
 static vector<string> GetRegisteredCPUOps() {
@@ -340,6 +430,20 @@ PYBIND11_MODULE(backend_impl, m) {
     .value("INT64", DALI_INT64)
     .value("INT32", DALI_INT32)
     .value("BOOL", DALI_BOOL)
+    .value("STRING", DALI_STRING)
+    .value("_BOOL_VEC", DALI_BOOL_VEC)
+    .value("_INT32_VEC", DALI_INT_VEC)
+    .value("_STRING_VEC", DALI_STRING_VEC)
+    .value("_FLOAT_VEC", DALI_FLOAT_VEC)
+#ifdef DALI_BUILD_PROTO3
+    .value("FEATURE", DALI_TF_FEATURE)
+    .value("_FEATURE_VEC", DALI_TF_FEATURE_VEC)
+    .value("_FEATURE_DICT", DALI_TF_FEATURE_DICT)
+#endif  // DALI_BUILD_PROTO3
+    .value("IMAGE_TYPE", DALI_IMAGE_TYPE)
+    .value("DATA_TYPE", DALI_DATA_TYPE)
+    .value("INTERP_TYPE", DALI_INTERP_TYPE)
+    .value("TENSOR_LAYOUT", DALI_TENSOR_LAYOUT)
     .export_values();
 
   // DALIImageType
@@ -360,6 +464,7 @@ PYBIND11_MODULE(backend_impl, m) {
   py::enum_<DALITensorLayout>(types_m, "DALITensorLayout", "Tensor layout")
     .value("NCHW", DALI_NCHW)
     .value("NHWC", DALI_NHWC)
+    .value("SAME", DALI_SAME)
     .export_values();
 
   // Operator node
@@ -397,13 +502,13 @@ PYBIND11_MODULE(backend_impl, m) {
     // initialize from serialized pipeline
     .def(py::init(
           [](string serialized_pipe,
-             int batch_size, int num_threads, int device_id, int seed = -1,
+             int batch_size, int num_threads, int device_id,
              bool pipelined_execution = true, bool async_execution = true,
              size_t bytes_per_sample_hint = 0, bool set_affinity = false,
              int max_num_stream = -1) {
               return std::unique_ptr<Pipeline>(
                   new Pipeline(serialized_pipe,
-                               batch_size, num_threads, device_id, seed, pipelined_execution,
+                               batch_size, num_threads, device_id, pipelined_execution,
                                async_execution, bytes_per_sample_hint, set_affinity,
                                max_num_stream));
             }),
@@ -411,7 +516,6 @@ PYBIND11_MODULE(backend_impl, m) {
         "batch_size"_a,
         "num_threads"_a,
         "device_id"_a,
-        "seed"_a,
         "exec_pipelined"_a,
         "exec_async"_a,
         "bytes_per_sample_hint"_a = 0,
@@ -427,6 +531,10 @@ PYBIND11_MODULE(backend_impl, m) {
     .def("Build",
         [](Pipeline *p) {
           p->Build();
+          })
+    .def("SetOutputNames",
+        [](Pipeline *p, const std::vector<std::pair<string, string>>& outputs) {
+          p->SetOutputNames(outputs);
           })
     .def("RunCPU", &Pipeline::RunCPU)
     .def("RunGPU", &Pipeline::RunGPU)
@@ -543,7 +651,15 @@ PYBIND11_MODULE(backend_impl, m) {
     .def("HasOutputFn", &OpSchema::HasOutputFn)
     .def("CalculateOutputs", &OpSchema::CalculateOutputs)
     .def("SupportsInPlace", &OpSchema::SupportsInPlace)
-    .def("CheckArgs", &OpSchema::CheckArgs);
+    .def("CheckArgs", &OpSchema::CheckArgs)
+    .def("GetArgumentDox", &OpSchema::GetArgumentDox)
+    .def("GetArgumentType", &OpSchema::GetArgumentType)
+    .def("GetArgumentDefaultValueString", &OpSchema::GetArgumentDefaultValueString)
+    .def("GetArgumentNames", &OpSchema::GetArgumentNames)
+    .def("IsArgumentOptional", &OpSchema::HasOptionalArgument,
+        "arg_name"_a,
+        "local_only"_a = false)
+    .def("IsTensorArgument", &OpSchema::IsTensorArgument);
 
   ExposeTensor(m);
   ExposeTensorList(m);

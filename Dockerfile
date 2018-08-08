@@ -1,5 +1,5 @@
 #########################################################################################
-##  Stage 2: build DALI wheels using manylinux1 (CentOS 5 derivative)
+##  Stage 2: build DALI wheels on top of the dependencies image built in Stage 1
 #########################################################################################
 ARG DEPS_IMAGE_NAME
 FROM ${DEPS_IMAGE_NAME}
@@ -17,7 +17,7 @@ ENV PATH=${PYBIN}:${PATH} \
 
 RUN ln -s /opt/python/cp${PYV}* /opt/python/v
 
-RUN pip install future numpy setuptools wheel tensorflow-gpu && \
+RUN pip install future numpy setuptools wheel tensorflow-gpu==1.7 && \
     rm -rf /root/.cache/pip/
 
 RUN ln -s /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1 && \
@@ -33,7 +33,7 @@ RUN LD_LIBRARY_PATH="${PWD}:${LD_LIBRARY_PATH}" && \
     cmake ../ -DCMAKE_INSTALL_PREFIX=. \
           -DBUILD_TEST=ON -DBUILD_BENCHMARK=ON -DBUILD_PYTHON=ON \
           -DBUILD_LMDB=ON -DBUILD_TENSORFLOW=ON && \
-    make -j"$(grep ^processor /proc/cpuinfo | wc -l)" install
+    make -j"$(grep ^processor /proc/cpuinfo | wc -l)"
 
 ARG NVIDIA_BUILD_ID
 ENV NVIDIA_BUILD_ID ${NVIDIA_BUILD_ID:-0}

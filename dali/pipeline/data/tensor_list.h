@@ -38,10 +38,14 @@ typedef vector<Index> Dims;
  * in the list.
  */
 template <typename Backend>
-class TensorList : public Buffer<Backend> {
+class DLL_PUBLIC TensorList : public Buffer<Backend> {
  public:
-  TensorList() {}
-  ~TensorList() = default;
+  DLL_PUBLIC TensorList() : layout_(DALI_NHWC),
+                            tensor_view_(nullptr) {}
+
+  DLL_PUBLIC ~TensorList() {
+    delete tensor_view_;
+  }
 
   /**
    * @brief Resizes this TensorList to match the shape of the input.
@@ -56,7 +60,7 @@ class TensorList : public Buffer<Backend> {
    * changing the underlying data type if needed.
    */
   template <typename SrcBackend>
-  inline void Copy(const TensorList<SrcBackend> &other, cudaStream_t stream) {
+  DLL_PUBLIC inline void Copy(const TensorList<SrcBackend> &other, cudaStream_t stream) {
     this->set_type(other.type());
     ResizeLike(other);
     type_.template Copy<Backend, SrcBackend>(this->raw_mutable_data(),
@@ -64,7 +68,7 @@ class TensorList : public Buffer<Backend> {
   }
 
   template <typename SrcBackend>
-  inline void Copy(const vector<Tensor<SrcBackend>> &other, cudaStream_t stream) {
+  DLL_PUBLIC inline void Copy(const vector<Tensor<SrcBackend>> &other, cudaStream_t stream) {
     auto type = other[0].type();
 
     vector<Dims> new_shape(other.size());
@@ -89,7 +93,7 @@ class TensorList : public Buffer<Backend> {
    * contains a set of dimensions for each tensor to be allocated in the
    * list.
    */
-  inline void Resize(const vector<Dims> &new_shape) {
+  DLL_PUBLIC inline void Resize(const vector<Dims> &new_shape) {
     if (new_shape == shape_) return;
 
     // Calculate the new size
@@ -107,6 +111,11 @@ class TensorList : public Buffer<Backend> {
     // Resize the underlying allocation and save the new shape
     ResizeHelper(new_size);
     shape_ = new_shape;
+
+    // Tensor view of this TensorList is no longer valid
+    if (tensor_view_) {
+      tensor_view_->ShareData(this);
+    }
   }
 
   /**
@@ -116,11 +125,11 @@ class TensorList : public Buffer<Backend> {
    *
    * When this function is called, the calling object shares the
    * underlying allocation of the input TensorList. Its size, type
-   * and shape are set to match the calling TensorList. While this 
-   * list shares data with another list, 'shares_data()' will 
+   * and shape are set to match the calling TensorList. While this
+   * list shares data with another list, 'shares_data()' will
    * return 'true'.
    */
-  inline void ShareData(TensorList<Backend> *other) {
+  DLL_PUBLIC inline void ShareData(TensorList<Backend> *other) {
     DALI_ENFORCE(other != nullptr, "Input TensorList is nullptr");
     DALI_ENFORCE(IsValidType(other->type_), "To share data, "
         "the input TensorList must have a valid data type");
@@ -134,6 +143,11 @@ class TensorList : public Buffer<Backend> {
     num_bytes_ = other->num_bytes_;
     device_ = other->device_;
 
+    // Tensor view of this TensorList is no longer valid
+    if (tensor_view_) {
+      tensor_view_->ShareData(this);
+    }
+
     // If the other tensor has a non-zero size allocation, mark that
     // we are now sharing an allocation with another buffer
     shares_data_ = num_bytes_ > 0 ? true : false;
@@ -143,10 +157,10 @@ class TensorList : public Buffer<Backend> {
    * @brief Wraps the raw allocation. The input pointer must not be nullptr.
    * if the size of the allocation is zero, the TensorList is reset to
    * a default state and is NOT marked as sharing data.
-   * 
-   * After wrapping the allocation, the TensorLists size is set to 0, 
-   * and its type is reset to NoType. Future calls to Resize or setting 
-   * of the Tensor type will evaluate whether or not the current 
+   *
+   * After wrapping the allocation, the TensorLists size is set to 0,
+   * and its type is reset to NoType. Future calls to Resize or setting
+   * of the Tensor type will evaluate whether or not the current
    * allocation is large enough to be used and proceed appropriately.
    *
    * The TensorList object assumes no ownership of the input allocation,
@@ -154,7 +168,7 @@ class TensorList : public Buffer<Backend> {
    * the user to manage the lifetime of the allocation such that it
    * persist while it is in use by the Tensor.
    */
-  inline void ShareData(void *ptr, size_t bytes) {
+  DLL_PUBLIC inline void ShareData(void *ptr, size_t bytes) {
     DALI_ENFORCE(ptr != nullptr, "Input pointer must not be nullptr.");
 
     // Save our new pointer and bytes. Reset our type, shape, and size
@@ -165,6 +179,11 @@ class TensorList : public Buffer<Backend> {
     offsets_.clear();
     size_ = 0;
 
+    // Tensor view of this TensorList is no longer valid
+    if (tensor_view_) {
+      tensor_view_->ShareData(this);
+    }
+
     // If the input pointer stores a non-zero size allocation, mark
     // that we are sharing our underlying data
     shares_data_ = num_bytes_ > 0 ? true : false;
@@ -174,7 +193,7 @@ class TensorList : public Buffer<Backend> {
    * @brief Returns a typed pointer to the tensor with the given index.
    */
   template <typename T>
-  inline T* mutable_tensor(int idx) {
+  DLL_PUBLIC inline T* mutable_tensor(int idx) {
     return this->template mutable_data<T>() + tensor_offset(idx);
   }
 
@@ -182,14 +201,14 @@ class TensorList : public Buffer<Backend> {
    * @brief Returns a const typed pointer to the tensor with the given index.
    */
   template <typename T>
-  inline const T* tensor(int idx) const {
+  DLL_PUBLIC inline const T* tensor(int idx) const {
     return this->template data<T>() + tensor_offset(idx);
   }
 
   /**
    * @brief Returns a raw pointer to the tensor with the given index.
    */
-  inline void* raw_mutable_tensor(int idx) {
+  DLL_PUBLIC inline void* raw_mutable_tensor(int idx) {
     return static_cast<void*>(
         static_cast<uint8*>(this->raw_mutable_data()) +
         (tensor_offset(idx) * type_.size()));
@@ -198,7 +217,7 @@ class TensorList : public Buffer<Backend> {
   /**
    * @brief Returns a const raw pointer to the tensor with the given index.
    */
-  inline const void* raw_tensor(int idx) const {
+  DLL_PUBLIC inline const void* raw_tensor(int idx) const {
     return static_cast<const void*>(
         static_cast<const uint8*>(this->raw_data()) +
         (tensor_offset(idx) * type_.size()));
@@ -207,14 +226,14 @@ class TensorList : public Buffer<Backend> {
   /**
    * @brief Returns the number of tensors in the list.
    */
-  inline int ntensor() const {
+  DLL_PUBLIC inline int ntensor() const {
     return shape_.size();
   }
 
   /**
    * @brief Returns the offset of the tensor with the given index.
    */
-  inline Index tensor_offset(int idx) const {
+  DLL_PUBLIC inline Index tensor_offset(int idx) const {
 #ifndef NDEBUG
     DALI_ENFORCE(idx >= 0, "Negative index not supported");
     DALI_ENFORCE((size_t)idx < offsets_.size(), "Index out of offset range");
@@ -266,6 +285,22 @@ class TensorList : public Buffer<Backend> {
     return true;
   }
 
+  /**
+   * @brief Returns a Tensor which shares the data
+   * with this TensorList. The tensor obtained
+   * through this function stays valid for the lifetime
+   * of the parent TensorList.
+   */
+  Tensor<Backend> * AsTensor() {
+    if (tensor_view_ == nullptr) {
+      tensor_view_ = new Tensor<Backend>();
+      tensor_view_->ShareData(this);
+    }
+
+    return tensor_view_;
+  }
+
+
   // So we can access the members of other TensorListes
   // with different template types
   template <typename InBackend>
@@ -273,12 +308,27 @@ class TensorList : public Buffer<Backend> {
 
   DISABLE_COPY_MOVE_ASSIGN(TensorList);
 
+  inline DALITensorLayout GetLayout() const {
+    return layout_;
+  }
+
+  inline void SetLayout(DALITensorLayout layout) {
+    layout_ = layout;
+  }
+
  protected:
   // We store a set of dimension for each tensor in the list.
   // We also pre-compute the offsets of each tensor in the
   // underlying allocation for random access
   vector<Dims> shape_;
   vector<Index> offsets_;
+  DALITensorLayout layout_;
+
+  // In order to not leak memory (and make it slightly faster)
+  // when sharing data with a Tensor, we will store a pointer to
+  // Tensor that shares the data with this TensorList (valid only
+  // if IsDenseTensor returns true)
+  Tensor<Backend> * tensor_view_;
 
   USE_BUFFER_MEMBERS();
 };

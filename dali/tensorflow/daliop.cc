@@ -17,20 +17,24 @@
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/shape_inference.h"
+#include "tensorflow/core/framework/register_types.h"
+#include "tensorflow/core/framework/tensor_shape.h"
 
+#define USE_TF_ALLOCATOR 0
+
+#if USE_TF_ALLOCATOR
 #include "dali/tensorflow/tfallocator.h"
+#endif
 
+#include "dali/common.h"
 #include "dali/pipeline/dali.pb.h"
 #include "dali/pipeline/pipeline.h"
 #include "dali/c_api/c_api.h"
-#include "dali/common.h"
 #include "dali/error_handling.h"
 
 typedef std::chrono::high_resolution_clock Clock;
 
 namespace tf = tensorflow;
-
-#define USE_TF_ALLOCATOR 0
 
 #define TF_DALI_CALL(FUNC)                                                         \
     do {                                                                           \
@@ -39,7 +43,7 @@ namespace tf = tensorflow;
       } catch (std::runtime_error& e) {                                            \
         std::string error = "DALI " + std::string(#FUNC)                           \
                             + " failed: " + std::string(e.what());                 \
-        std::cout << error << std::endl;                                            \
+        std::cout << error << std::endl;                                           \
         context->SetStatus(tf::errors::Internal(error));                           \
        return;                                                                     \
       }                                                                            \
@@ -53,26 +57,39 @@ tf::TensorShape DaliToShape(int64_t* ns) {
   return ts;
 }
 
+#define NUM_DIMS 4
+
 REGISTER_OP("Dali")
   .Attr("serialized_pipeline: string")
-  .Attr("batch_size: int = 128")
-  .Attr("height: int = 0")
-  .Attr("width: int = 0")
-  .Attr("num_threads: int = 2")
-  .Attr("device_id: int = 0")
-  .Output("batch: float")
-  .Output("label: float")
+  .Attr("shape: shape")
+  .Attr("num_threads: int = -1")
+  .Attr("device_id: int = -1")
+  .Attr("image_type: {float, int32, half} = DT_FLOAT")
+  .Attr("label_type: {float, int32, half} = DT_INT32")
+  .Output("batch: image_type")
+  .Output("label: label_type")
   .SetShapeFn([](tf::shape_inference::InferenceContext* c) {
-    int batch_size;
-    int height;
-    int width;
-    TF_RETURN_IF_ERROR(c->GetAttr("batch_size", &batch_size));
-    TF_RETURN_IF_ERROR(c->GetAttr("height", &height));
-    TF_RETURN_IF_ERROR(c->GetAttr("width", &width));
-    c->set_output(0, c->MakeShape({batch_size, height, width, 3}));
+    tf::PartialTensorShape shape;
+    TF_RETURN_IF_ERROR(c->GetAttr("shape", &shape));
+    tf::shape_inference::ShapeHandle passed_shape;
+    TF_RETURN_IF_ERROR(
+        c->MakeShapeFromPartialTensorShape(shape, &passed_shape));
+    TF_RETURN_IF_ERROR(
+        c->WithRank(passed_shape, NUM_DIMS, &passed_shape));
+    c->set_output(0, passed_shape);
     return tf::Status::OK();
-  });
+  })
+  .Doc(R"doc(
+DALI TensorFlow plugin
 
+Creates a Dali pipeline for classification tasks from serialized DALI pipeline (given in `serialized_pipeline` parameter).
+Returns 2 TensorFlow tensors with data and label.
+`shape` must match the first DALI Pipeline output tensor shape (must be dim 4, either NCHW or NHWC).
+`image_type` must match the type of the first DALI Pipeline output tensor.
+`label_type` must match the type of the second DALI Pipeline output tensor.
+ )doc");
+
+template <typename Tb, typename Tl>
 class DaliOp : public tf::OpKernel {
  public:
   explicit DaliOp(tf::OpKernelConstruction* context)
@@ -81,20 +98,19 @@ class DaliOp : public tf::OpKernel {
     std::string serialized_pipeline;
     OP_REQUIRES_OK(context, context->GetAttr("serialized_pipeline", &serialized_pipeline));
 
-    int batch_size;
     int num_threads;
     int device_id;
 
-    OP_REQUIRES_OK(context, context->GetAttr("batch_size", &batch_size));
+    OP_REQUIRES_OK(context, context->GetAttr("shape", &shape_));
     OP_REQUIRES_OK(context, context->GetAttr("num_threads", &num_threads));
     OP_REQUIRES_OK(context, context->GetAttr("device_id", &device_id));
     this->device_id_ = device_id;
     LOG_LINE << "Initializing...\n";
 
-    TF_DALI_CALL(CreatePipeline(&pipe_handle_,
+    TF_DALI_CALL(daliCreatePipeline(&pipe_handle_,
                    serialized_pipeline.c_str(),
                    serialized_pipeline.length(),
-                   batch_size,
+                   shape_.dim_size(0),
                    num_threads,
                    device_id));
 
@@ -103,12 +119,12 @@ class DaliOp : public tf::OpKernel {
     UpdateTFAllocaterContext<tf::OpKernelConstruction>(context, device_id_);
 #endif
     LOG_LINE << "Pipeline created\n";
-    TF_DALI_CALL(Run(&pipe_handle_));
+    TF_DALI_CALL(daliRun(&pipe_handle_));
     LOG_LINE << "After first run\n";
   }
 
   ~DaliOp() override {
-    DeletePipeline(&pipe_handle_);
+    daliDeletePipeline(&pipe_handle_);
   }
 
   void Compute(tf::OpKernelContext* context) override {
@@ -119,13 +135,13 @@ class DaliOp : public tf::OpKernel {
 #endif
     LOG_LINE << "Updated context\n";
     auto s = Clock::now();
-    TF_DALI_CALL(Run(&pipe_handle_));
+    TF_DALI_CALL(daliRun(&pipe_handle_));
     int64_t run_time = std::chrono::duration_cast<std::chrono::microseconds>(
                          Clock::now() - s).count();
     LOG_LINE << "Before output...\n";
 
     s = Clock::now();
-    TF_DALI_CALL(Output(&pipe_handle_));
+    TF_DALI_CALL(daliOutput(&pipe_handle_));
     int64_t output_time = std::chrono::duration_cast<std::chrono::microseconds>(
                             Clock::now() - s).count();
     LOG_LINE << "After output...\n";
@@ -134,12 +150,16 @@ class DaliOp : public tf::OpKernel {
     // Classification
     int64_t* data_tensor_shape;
     int64_t* label_tensor_shape;
-    TF_DALI_CALL(data_tensor_shape = ShapeAt(&pipe_handle_, 0));
-    TF_DALI_CALL(label_tensor_shape = ShapeAt(&pipe_handle_, 1));
+    TF_DALI_CALL(data_tensor_shape = daliShapeAt(&pipe_handle_, 0));
+    TF_DALI_CALL(label_tensor_shape = daliShapeAt(&pipe_handle_, 1));
 
     tf::Tensor* data_output_tensor = NULL;
     tf::Tensor* label_output_tensor = NULL;
     tf::TensorShape data_output_shape = DaliToShape(data_tensor_shape);
+    OP_REQUIRES(context, data_output_shape == shape_,
+        tf::errors::InvalidArgument("DALI pipeline output shape "
+                                    "!= plugin `shape` argument"));
+
     tf::TensorShape label_output_shape = DaliToShape(label_tensor_shape);
     OP_REQUIRES_OK(context,
         context->allocate_output(0, data_output_shape, &data_output_tensor));
@@ -150,15 +170,15 @@ class DaliOp : public tf::OpKernel {
                              Clock::now() - s).count();
 
     s = Clock::now();
-    TF_DALI_CALL(CopyTensorNTo(&pipe_handle_,
-        reinterpret_cast<void*>(data_output_tensor->flat<float>().data()),
+    TF_DALI_CALL(daliCopyTensorNTo(&pipe_handle_,
+        reinterpret_cast<void*>(data_output_tensor->flat<Tb>().data()),
         0));
     int64_t copy0_time =  std::chrono::duration_cast<std::chrono::microseconds>(
                            Clock::now() - s).count();
 
     s = Clock::now();
-    TF_DALI_CALL(CopyTensorNTo(&pipe_handle_,
-        reinterpret_cast<void*>(label_output_tensor->flat<float>().data()),
+    TF_DALI_CALL(daliCopyTensorNTo(&pipe_handle_,
+        reinterpret_cast<void*>(label_output_tensor->flat<Tl>().data()),
         1));
     int64_t copy1_time =  std::chrono::duration_cast<std::chrono::microseconds>(
                             Clock::now() - s).count();
@@ -171,8 +191,33 @@ class DaliOp : public tf::OpKernel {
   }
 
  private:
-  PipelineHandle pipe_handle_;
+  daliPipelineHandle pipe_handle_;
+  tf::TensorShape shape_;
   int device_id_;
 };
 
-REGISTER_KERNEL_BUILDER(Name("Dali").Device(tf::DEVICE_GPU), DaliOp);
+#define REGISTER_KERNEL(type_b, type_l) \
+  REGISTER_KERNEL_BUILDER(              \
+      Name("Dali")                      \
+      .Device(tf::DEVICE_GPU)           \
+      .TypeConstraint<type_b>("image_type")     \
+      .TypeConstraint<type_l>("label_type")     \
+      , DaliOp<type_b, type_l>);
+
+#define REGISTER_KERNEL_FP16(type_l) \
+  REGISTER_KERNEL_BUILDER(              \
+      Name("Dali")                      \
+      .Device(tf::DEVICE_GPU)           \
+      .TypeConstraint("image_type", tf::DT_HALF)     \
+      .TypeConstraint<type_l>("label_type")     \
+      , DaliOp<unsigned short, type_l>); // NOLINT
+
+REGISTER_KERNEL(float, float);
+REGISTER_KERNEL(int, int);
+REGISTER_KERNEL(float, int);
+REGISTER_KERNEL(int, float);
+REGISTER_KERNEL_FP16(float);
+REGISTER_KERNEL_FP16(int);
+
+#undef REGISTER_KERNEL
+#undef REGISTER_KERNEL_FP16

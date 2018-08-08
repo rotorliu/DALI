@@ -16,7 +16,7 @@
 #define DALI_PIPELINE_DATA_TYPES_H_
 
 // workaround missing "is_trivially_copyable" in g++ < 5.0
-#if __GNUG__ && __GNUC__ < 5
+#if __cplusplus && __GNUC__ < 5 && !__clang__
 #include <boost/type_traits/has_trivial_copy.hpp>
 #define IS_TRIVIALLY_COPYABLE(T) ::boost::has_trivial_copy<T>::value
 #else
@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include <functional>
 #include <mutex>
@@ -35,6 +36,10 @@
 
 #include "dali/common.h"
 #include "dali/error_handling.h"
+
+#ifdef DALI_BUILD_PROTO3
+#include "dali/pipeline/operators/reader/parser/tf_feature.h"
+#endif  // DALI_BUILD_PROTO3
 
 #ifndef DALI_TYPENAME_REGISTERER
 #define DALI_TYPENAME_REGISTERER(...)
@@ -62,157 +67,64 @@ enum DALIDataType {
   DALI_FLOAT64 = 6,
   DALI_BOOL = 7,
   DALI_STRING = 8,
-  DALI_NPPI_POINT,
-  DALI_NPPI_SIZE,
-  DALI_NPPI_RECT_SIZE,
-  DALI_UINT8_PNTR,
-  DALI_UINT32,
-  DALI_RESIZE_MAPPING,
-  DALI_PIX_MAPPING,
-  DALI_DATATYPE_END
+  DALI_BOOL_VEC = 9,
+  DALI_INT_VEC = 10,
+  DALI_STRING_VEC = 11,
+  DALI_FLOAT_VEC = 12,
+#ifdef DALI_BUILD_PROTO3
+  DALI_TF_FEATURE = 13,
+  DALI_TF_FEATURE_VEC = 14,
+  DALI_TF_FEATURE_DICT = 15,
+#endif  // DALI_BUILD_PROTO3
+  DALI_IMAGE_TYPE = 16,
+  DALI_DATA_TYPE = 17,
+  DALI_INTERP_TYPE = 18,
+  DALI_TENSOR_LAYOUT = 19,
+  DALI_DATATYPE_END = 1000
 };
-
-inline std::string to_string(const DALIDataType& dtype) {
-  switch (dtype) {
-    case DALI_NO_TYPE:
-      return "NO TYPE";
-    case DALI_UINT8:
-      return "UINT8";
-    case DALI_UINT32:
-      return "UINT32";
-    case DALI_INT16:
-      return "INT16";
-    case DALI_INT32:
-      return "INT32";
-    case DALI_INT64:
-      return "INT64";
-    case DALI_FLOAT16:
-      return "FLOAT16";
-    case DALI_FLOAT:
-      return "FLOAT";
-    case DALI_FLOAT64:
-      return "FLOAT64";
-    case DALI_BOOL:
-      return "BOOL";
-    case DALI_STRING:
-      return "STRING";
-    case DALI_NPPI_POINT:
-      return "NPPI_POINT";
-    case DALI_NPPI_SIZE:
-      return "NPPI_SIZE";
-    case DALI_NPPI_RECT_SIZE:
-      return "NPPI_RECT";
-    case DALI_UINT8_PNTR:
-      return "UINT8_PNTR";
-    case DALI_RESIZE_MAPPING:
-      return "RESIZE_MAPPING";
-    case DALI_PIX_MAPPING:
-      return "PIX_MAPPING";
-    default:
-      return "<internal>";
-  }
-}
 
 // Dummy type to represent the invalid default state of dali types.
 struct NoType {};
 
-/**
- * @brief Keeps track of mappings between types and unique identifiers.
- */
-class TypeTable {
- public:
-  template <typename T>
-  static DALIDataType GetTypeID() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    static DALIDataType type_id = TypeTable::RegisterType<T>(static_cast<DALIDataType>(++index_));
-    return type_id;
-  }
-
-  template <typename T>
-  static string GetTypeName() {
-    return typeid(T).name();
-  }
-
- private:
-  // TypeTable should only be referenced through its static members
-  TypeTable();
-
-  // Used by DALI_REGISTER_TYPE macros to register a type in the type table
-  template <typename T>
-  static DALIDataType RegisterType(DALIDataType dtype) {
-    // Lock the mutex to ensure correct setup even if this
-    // method is triggered from threads
-
-    // Check the map for this types id
-    auto id_it = type_map_.find(typeid(T));
-
-    if (id_it == type_map_.end()) {
-      type_map_[typeid(T)] = dtype;
-      return dtype;
-    } else {
-      return id_it->second;
-    }
-  }
-
-  static std::mutex mutex_;
-  static std::unordered_map<std::type_index, DALIDataType> type_map_;
-  static int index_;
-};
-
 // Stores the unqiue ID for a type and its size in bytes
-class TypeInfo {
+class DLL_PUBLIC TypeInfo {
  public:
-  inline TypeInfo() {
+  DLL_PUBLIC inline TypeInfo() {
     SetType<NoType>();
   }
 
   template <typename T>
-  static inline TypeInfo Create() {
+  DLL_PUBLIC static inline TypeInfo Create() {
     TypeInfo type;
     type.SetType<T>();
     return type;
   }
 
   template <typename T>
-  inline void SetType() {
-    // Note: We enforce the fact that NoType is invalid by
-    // explicitly setting its type size as 0
-    type_size_ = std::is_same<T, NoType>::value ? 0 : sizeof(T);
-    id_ = TypeTable::GetTypeID<T>();
-    name_ = TypeTable::GetTypeName<T>();
-
-    // Get constructor/destructor/copier for this type
-    constructor_ = std::bind(&TypeInfo::ConstructorFunc<T>,
-        this, std::placeholders::_1, std::placeholders::_2);
-    destructor_ = std::bind(&TypeInfo::DestructorFunc<T>,
-        this, std::placeholders::_1, std::placeholders::_2);
-    copier_ = std::bind(&TypeInfo::CopyFunc<T>,
-        this, std::placeholders::_1, std::placeholders::_2,
-        std::placeholders::_3);
-  }
+  DLL_PUBLIC inline void SetType(DALIDataType dtype = DALI_NO_TYPE);
 
   template <typename Backend>
-  void Construct(void *ptr, Index n);
+  DLL_PUBLIC void Construct(void *ptr, Index n);
 
   template <typename Backend>
-  void Destruct(void *ptr, Index n);
+  DLL_PUBLIC void Destruct(void *ptr, Index n);
 
   template <typename DstBackend, typename SrcBackend>
-  void Copy(void *dst, const void *src, Index n, cudaStream_t stream);
+  DLL_PUBLIC void Copy(void *dst, const void *src, Index n, cudaStream_t stream);
 
-  inline DALIDataType id() const {
+  DLL_PUBLIC inline DALIDataType id() const {
     return id_;
   }
 
-  inline size_t size() const {
+  DLL_PUBLIC inline size_t size() const {
     return type_size_;
   }
 
-  inline string name() const {
+  DLL_PUBLIC inline string name() const {
     return name_;
   }
 
-  inline bool operator==(const TypeInfo &rhs) const {
+  DLL_PUBLIC inline bool operator==(const TypeInfo &rhs) const {
     if ((rhs.id_ == id_) &&
         (rhs.type_size_ == type_size_) &&
         (rhs.name_ == name_)) {
@@ -271,17 +183,109 @@ class TypeInfo {
 };
 
 /**
+ * @brief Keeps track of mappings between types and unique identifiers.
+ */
+class DLL_PUBLIC TypeTable {
+ public:
+  template <typename T>
+  DLL_PUBLIC static DALIDataType GetTypeID() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    static DALIDataType type_id = TypeTable::RegisterType<T>(static_cast<DALIDataType>(++index_));
+    return type_id;
+  }
+
+  template <typename T>
+  DLL_PUBLIC static typename std::enable_if<
+    !is_vector<T>::value &&
+    !is_array<T>::value,
+    string>::type GetTypeName() {
+    return typeid(T).name();
+  }
+
+  template <typename T>
+  DLL_PUBLIC static typename std::enable_if<
+    is_vector<T>::value || is_array<T>::value,
+    string>::type GetTypeName() {
+    return "list of " + GetTypeName<typename T::value_type>();
+  }
+
+  DLL_PUBLIC static const TypeInfo& GetTypeInfo(DALIDataType dtype) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto id_it = type_info_map_.find(dtype);
+    DALI_ENFORCE(id_it != type_info_map_.end(),
+        "Type with id " + to_string((size_t)dtype) + " was not registered.");
+    return id_it->second;
+  }
+
+ private:
+  // TypeTable should only be referenced through its static members
+  TypeTable();
+
+  template <typename T>
+  static DALIDataType RegisterType(DALIDataType dtype) {
+    // Use only when already guarded by the mutex to
+    // avoid races when used from multiple threads
+
+    // Check the map for this types id
+    auto id_it = type_map_.find(typeid(T));
+
+    if (id_it == type_map_.end()) {
+      type_map_[typeid(T)] = dtype;
+      TypeInfo t;
+      t.SetType<T>(dtype);
+      type_info_map_[dtype] = t;
+      return dtype;
+    } else {
+      return id_it->second;
+    }
+  }
+
+  static std::mutex mutex_;
+  static std::unordered_map<std::type_index, DALIDataType> type_map_;
+  // Unordered maps do not work with enums,
+  // so we need to use size_t instead of DALIDataType
+  static std::unordered_map<size_t, TypeInfo> type_info_map_;
+  static int index_;
+};
+
+template <typename T>
+void TypeInfo::SetType(DALIDataType dtype) {
+  // Note: We enforce the fact that NoType is invalid by
+  // explicitly setting its type size as 0
+  type_size_ = std::is_same<T, NoType>::value ? 0 : sizeof(T);
+  if (!std::is_same<T, NoType>::value) {
+    id_ = dtype != DALI_NO_TYPE ? dtype : TypeTable::GetTypeID<T>();
+  } else {
+    id_ = DALI_NO_TYPE;
+  }
+  name_ = TypeTable::GetTypeName<T>();
+
+  // Get constructor/destructor/copier for this type
+  constructor_ = std::bind(&TypeInfo::ConstructorFunc<T>,
+      this, std::placeholders::_1, std::placeholders::_2);
+  destructor_ = std::bind(&TypeInfo::DestructorFunc<T>,
+      this, std::placeholders::_1, std::placeholders::_2);
+  copier_ = std::bind(&TypeInfo::CopyFunc<T>,
+      this, std::placeholders::_1, std::placeholders::_2,
+      std::placeholders::_3);
+}
+
+inline std::string to_string(const DALIDataType& dtype) {
+  return TypeTable::GetTypeInfo(dtype).name();
+}
+
+/**
  * @brief Utility to check types
  */
 template <typename T>
-inline bool IsType(TypeInfo type) {
+DLL_PUBLIC inline bool IsType(TypeInfo type) {
   return type.id() == TypeTable::GetTypeID<T>();
 }
 
 /**
  * @brief Utility to check for valid type
  */
-inline bool IsValidType(TypeInfo type) {
+DLL_PUBLIC inline bool IsValidType(TypeInfo type) {
   return !IsType<NoType>(type);
 }
 
@@ -291,9 +295,9 @@ inline bool IsValidType(TypeInfo type) {
 // as we do not have any mechanism for calling the constructor of the
 // type when the buffer allocates the memory.
 #define DALI_REGISTER_TYPE(Type, dtype)                           \
-  template <> string TypeTable::GetTypeName<Type>()               \
+  template <> DLL_PUBLIC string TypeTable::GetTypeName<Type>()               \
     DALI_TYPENAME_REGISTERER(Type);                               \
-  template <> DALIDataType TypeTable::GetTypeID<Type>()           \
+  template <> DLL_PUBLIC DALIDataType TypeTable::GetTypeID<Type>()           \
     DALI_TYPEID_REGISTERER(Type, dtype);
 
 // Instantiate some basic types
@@ -306,11 +310,20 @@ DALI_REGISTER_TYPE(float16, DALI_FLOAT16);
 DALI_REGISTER_TYPE(float, DALI_FLOAT);
 DALI_REGISTER_TYPE(double, DALI_FLOAT64);
 DALI_REGISTER_TYPE(bool, DALI_BOOL);
-DALI_REGISTER_TYPE(NppiPoint, DALI_NPPI_POINT);
-DALI_REGISTER_TYPE(NppiSize, DALI_NPPI_SIZE);
-DALI_REGISTER_TYPE(NppiRect, DALI_NPPI_RECT_SIZE);
-DALI_REGISTER_TYPE(uint8 *, DALI_UINT8_PNTR);
-DALI_REGISTER_TYPE(std::string, DALI_STRING);
+DALI_REGISTER_TYPE(string, DALI_STRING);
+DALI_REGISTER_TYPE(DALIImageType, DALI_IMAGE_TYPE);
+DALI_REGISTER_TYPE(DALIDataType, DALI_DATA_TYPE);
+DALI_REGISTER_TYPE(DALIInterpType, DALI_INTERP_TYPE);
+DALI_REGISTER_TYPE(DALITensorLayout, DALI_TENSOR_LAYOUT);
+
+#ifdef DALI_BUILD_PROTO3
+DALI_REGISTER_TYPE(TFUtil::Feature, DALI_TF_FEATURE);
+DALI_REGISTER_TYPE(std::vector<TFUtil::Feature>, DALI_TF_FEATURE_VEC);
+#endif
+DALI_REGISTER_TYPE(std::vector<bool>, DALI_BOOL_VEC);
+DALI_REGISTER_TYPE(std::vector<int>, DALI_INT_VEC);
+DALI_REGISTER_TYPE(std::vector<std::string>, DALI_STRING_VEC);
+DALI_REGISTER_TYPE(std::vector<float>, DALI_FLOAT_VEC);
 
 /**
  * @brief Easily instantiate templates for all types

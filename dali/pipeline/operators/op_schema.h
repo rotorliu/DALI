@@ -30,13 +30,14 @@ namespace dali {
 
 class OpSpec;
 
-class OpSchema {
+class DLL_PUBLIC OpSchema {
  public:
   typedef std::function<int(const OpSpec &spec)> SpecFunc;
 
-  explicit inline OpSchema(const std::string &name)
+  DLL_PUBLIC explicit inline OpSchema(const std::string &name)
     : name_(name),
-      allow_multiple_input_sets_(false) {
+      allow_multiple_input_sets_(false),
+      enforce_layout_(false) {
     // Fill internal arguments
     internal_arguments_["num_threads"] = std::make_pair("Number of CPU threads in a thread pool",
         Value::construct(-1));
@@ -52,19 +53,19 @@ class OpSchema {
         Value::construct(1234));
   }
 
-  inline ~OpSchema() = default;
+  DLL_PUBLIC inline ~OpSchema() = default;
 
   /**
    * @brief Returns the name of this operator.
    */
-  inline const std::string& name() const {
+  DLL_PUBLIC inline const std::string& name() const {
     return name_;
   }
 
   /**
    * @brief Sets the doc string for this operator.
    */
-  inline OpSchema& DocStr(const string &dox) {
+  DLL_PUBLIC inline OpSchema& DocStr(const string &dox) {
     dox_ = dox;
     return *this;
   }
@@ -77,7 +78,7 @@ class OpSchema {
    * If the ops has a fixed number of outputs, this function
    * does not need to be added to the schema
    */
-  inline OpSchema& OutputFn(SpecFunc f) {
+  DLL_PUBLIC inline OpSchema& OutputFn(SpecFunc f) {
     output_fn_ = f;
     return *this;
   }
@@ -93,7 +94,7 @@ class OpSchema {
    * Use case is to expose additional information (such as random
    * numbers used within operators) to the user
    */
-  inline OpSchema& AdditionalOutputsFn(SpecFunc f) {
+  DLL_PUBLIC inline OpSchema& AdditionalOutputsFn(SpecFunc f) {
     additional_outputs_fn_ = f;
     return *this;
   }
@@ -101,7 +102,7 @@ class OpSchema {
   /**
    * @brief Sets the number of inputs that the op can receive.
    */
-  inline OpSchema& NumInput(int n) {
+  DLL_PUBLIC inline OpSchema& NumInput(int n) {
     DALI_ENFORCE(n >= 0);
     max_num_input_ = n;
     min_num_input_ = n;
@@ -111,7 +112,7 @@ class OpSchema {
   /**
    * @brief Sets the min and max number of inputs the op can receive.
    */
-  inline OpSchema& NumInput(int min, int max) {
+  DLL_PUBLIC inline OpSchema& NumInput(int min, int max) {
     DALI_ENFORCE(min <= max);
     DALI_ENFORCE(min >= 0);
     DALI_ENFORCE(max >= 0);
@@ -123,7 +124,7 @@ class OpSchema {
   /**
    * @brief Sets the number of outputs that the op can receive.
    */
-  inline OpSchema& NumOutput(int n) {
+  DLL_PUBLIC inline OpSchema& NumOutput(int n) {
     DALI_ENFORCE(n >= 0);
     num_output_ = n;
     return *this;
@@ -132,17 +133,29 @@ class OpSchema {
   /**
    * @brief Notes that multiple input sets can be used with this op
    */
-  inline OpSchema& AllowMultipleInputSets() {
+  DLL_PUBLIC inline OpSchema& AllowMultipleInputSets() {
     allow_multiple_input_sets_ = true;
     return *this;
   }
 
   /**
-   * @brief Adds a required argument to op
+   * @brief Adds a required argument to op with its type
    */
-  inline OpSchema& AddArg(const std::string &s, const std::string &doc) {
+  DLL_PUBLIC inline OpSchema& AddArg(const std::string &s,
+                                     const std::string &doc,
+                                     const DALIDataType dtype,
+                                     bool enable_tensor_input = false) {
     CheckArgument(s);
-    arguments_[s] = doc;
+    arguments_[s] = std::make_pair(doc, dtype);
+    if (enable_tensor_input) {
+      tensor_arguments_.insert(s);
+    }
+    return *this;
+  }
+
+  DLL_PUBLIC inline OpSchema& EnforceInputLayout(DALITensorLayout layout) {
+    layout_ = layout;
+    enforce_layout_ = true;
     return *this;
   }
 
@@ -150,14 +163,18 @@ class OpSchema {
    * @brief Adds an optional non-vector argument to op
    */
   template <typename T>
-  inline typename std::enable_if<
+  DLL_PUBLIC inline typename std::enable_if<
     !is_vector<T>::value && !is_array<T>::value,
-    OpSchema&>::type
-  AddOptionalArg(const std::string &s, const std::string &doc, T default_value) {
+    OpSchema&>::type AddOptionalArg(const std::string &s,
+                                    const std::string &doc,
+                                    T default_value,
+                                    bool enable_tensor_input = false) {
     CheckArgument(s);
-    std::string stored_doc = doc + " (default value: `" + to_string(default_value) + "`)";
     Value * to_store = Value::construct(default_value);
-    optional_arguments_[s] = std::make_pair(stored_doc, to_store);
+    optional_arguments_[s] = std::make_pair(doc, to_store);
+    if (enable_tensor_input) {
+      tensor_arguments_.insert(s);
+    }
     return *this;
   }
 
@@ -165,12 +182,14 @@ class OpSchema {
    * @brief Adds an optional vector argument to op
    */
   template <typename T>
-  inline OpSchema& AddOptionalArg(const std::string &s, const std::string &doc,
-                                  std::vector<T> default_value) {
+  DLL_PUBLIC inline OpSchema& AddOptionalArg(const std::string &s, const std::string &doc,
+                                  std::vector<T> default_value, bool enable_tensor_input = false) {
     CheckArgument(s);
-    std::string stored_doc = doc + " (default value: " + to_string(default_value) + ")";
     Value * to_store = Value::construct(std::vector<T>(default_value));
-    optional_arguments_[s] = std::make_pair(stored_doc, to_store);
+    optional_arguments_[s] = std::make_pair(doc, to_store);
+    if (enable_tensor_input) {
+      tensor_arguments_.insert(s);
+    }
     return *this;
   }
 
@@ -178,103 +197,102 @@ class OpSchema {
    * @brief Sets a function that infers whether the op can
    * be executed in-place depending on the ops specification.
    */
-  inline OpSchema& InPlaceFn(SpecFunc f) {
+  DLL_PUBLIC inline OpSchema& InPlaceFn(SpecFunc f) {
     REPORT_FATAL_PROBLEM("In-place op support not yet implemented.");
     return *this;
   }
 
   /**
-   * @brief Sets a parent (which could be used as a storage of default parameters
+   * @brief Sets a parent (which could be used as a storage of default parameters)
+   * Does not support cyclic dependency.
    */
-  inline OpSchema& AddParent(const std::string &parentName) {
+  DLL_PUBLIC inline OpSchema& AddParent(const std::string &parentName) {
     parents_.push_back(parentName);
     return *this;
   }
 
-  inline OpSchema& SetName(const std::string &name) {
+  DLL_PUBLIC inline OpSchema& SetName(const std::string &name) {
     name_ = name;
     return *this;
   }
 
-  inline string Name() const {
-    return name_;
-  }
-
-  inline const vector<std::string>& GetParents() const {
+  DLL_PUBLIC inline const vector<std::string>& GetParents() const {
     return parents_;
   }
 
-  inline bool HasParent() const {
-    return parents_.size() > 0;
-  }
+  DLL_PUBLIC string Dox() const;
 
-  string Dox() const;
-
-  inline int MaxNumInput() const {
+  DLL_PUBLIC inline int MaxNumInput() const {
     return max_num_input_;
   }
 
-  inline int MinNumInput() const {
+  DLL_PUBLIC inline int MinNumInput() const {
     return min_num_input_;
   }
 
-  inline int NumOutput() const {
+  DLL_PUBLIC inline int NumOutput() const {
     return num_output_;
   }
 
-  inline bool AllowsMultipleInputSets() const {
+  DLL_PUBLIC inline bool AllowsMultipleInputSets() const {
     return allow_multiple_input_sets_;
   }
 
-  inline bool HasOutputFn() const {
+  DLL_PUBLIC inline bool EnforceInputLayout() const {
+    return enforce_layout_;
+  }
+
+  DLL_PUBLIC inline DALITensorLayout InputLayout() const {
+    return layout_;
+  }
+
+  DLL_PUBLIC inline bool HasOutputFn() const {
     return static_cast<bool>(output_fn_);
   }
 
-  int CalculateOutputs(const OpSpec &spec) const;
+  DLL_PUBLIC int CalculateOutputs(const OpSpec &spec) const;
 
-  int CalculateAdditionalOutputs(const OpSpec &spec) const {
+  DLL_PUBLIC int CalculateAdditionalOutputs(const OpSpec &spec) const {
     if (!additional_outputs_fn_) return 0;
     return additional_outputs_fn_(spec);
   }
 
-  inline bool SupportsInPlace(const OpSpec &spec) const {
+  DLL_PUBLIC inline bool SupportsInPlace(const OpSpec &spec) const {
     if (!in_place_fn_) return false;
     return in_place_fn_(spec);
   }
 
-  void CheckArgs(const OpSpec &spec) const;
+  DLL_PUBLIC void CheckArgs(const OpSpec &spec) const;
 
-  inline const OpSchema& GetSchemaWithArgument(const string& name) const;
-
-  inline bool OptionalArgumentExists(const std::string &s, const bool local_only = false) const;
+  DLL_PUBLIC inline const OpSchema& GetSchemaWithArgument(const string& name) const;
 
   template<typename T>
-  inline T GetDefaultValueForOptionalArgument(const std::string &s) const;
+  DLL_PUBLIC inline T GetDefaultValueForOptionalArgument(const std::string &s) const;
 
-  inline bool HasRequiredArgument(const std::string &name) const {
-    return arguments_.find(name) != arguments_.end();
-  }
+  DLL_PUBLIC bool HasRequiredArgument(const std::string &name, const bool local_only = false) const;
 
-  inline bool HasOptionalArgument(const std::string &name) const {
-    return optional_arguments_.find(name) != optional_arguments_.end();
-  }
+  DLL_PUBLIC bool HasOptionalArgument(const std::string &name, const bool local_only = false) const;
 
-  inline bool HasArgument(const string &name) const {
+  DLL_PUBLIC inline bool HasArgument(const std::string &name) const {
     return HasRequiredArgument(name) || HasOptionalArgument(name);
   }
 
+  DLL_PUBLIC std::string GetArgumentDox(const std::string &name) const;
+  DLL_PUBLIC DALIDataType GetArgumentType(const std::string &name) const;
+  DLL_PUBLIC std::string GetArgumentDefaultValueString(const std::string &name) const;
+  DLL_PUBLIC std::vector<std::string> GetArgumentNames() const;
+  DLL_PUBLIC bool IsTensorArgument(const std::string &name) const;
+
  private:
   inline bool CheckArgument(const std::string &s) {
-    DALI_ENFORCE(arguments_.find(s) == arguments_.end(),
-                 "Argument \"" + s + "\" already added to the schema");
-    DALI_ENFORCE(!OptionalArgumentExists(s),
+    DALI_ENFORCE(!HasArgument(s),
                  "Argument \"" + s + "\" already added to the schema");
     DALI_ENFORCE(internal_arguments_.find(s) == internal_arguments_.end(),
                  "Argument name \"" + s + "\" is reserved for internal use");
     return true;
   }
 
-  std::map<std::string, std::string> GetRequiredArguments() const;
+  std::map<std::string, std::pair<std::string, DALIDataType> > GetRequiredArguments() const;
 
   std::map<std::string, std::pair<std::string, Value*>> GetOptionalArguments() const;
 
@@ -288,9 +306,14 @@ class OpSchema {
   bool allow_multiple_input_sets_;
   vector<string> parents_;
 
-  std::map<std::string, std::string> arguments_;
+  bool enforce_layout_;
+  DALITensorLayout layout_;
+
+  std::map<std::string, std::pair<std::string, DALIDataType> > arguments_;
   std::map<std::string, std::pair<std::string, Value*> > optional_arguments_;
   std::map<std::string, std::pair<std::string, Value*> > internal_arguments_;
+
+  std::set<std::string> tensor_arguments_;
 };
 
 class SchemaRegistry {
@@ -309,7 +332,7 @@ class SchemaRegistry {
   static const OpSchema& GetSchema(const std::string &name) {
     auto &schema_map = registry();
     auto it = schema_map.find(name);
-    DALI_ENFORCE(it != schema_map.end(), "Schema '" +
+    DALI_ENFORCE(it != schema_map.end(), "Schema for operator '" +
         name + "' not registered");
     return it->second;
   }
@@ -317,14 +340,14 @@ class SchemaRegistry {
  private:
   inline SchemaRegistry() {}
 
-  static std::map<string, OpSchema>& registry();
+  DLL_PUBLIC static std::map<string, OpSchema>& registry();
 };
 
 inline string GetSchemaWithArg(const string& start, const string& arg) {
   const OpSchema& s = SchemaRegistry::GetSchema(start);
 
   // Found locally, return immediately
-  if (s.OptionalArgumentExists(arg, true)) {
+  if (s.HasOptionalArgument(arg, true)) {
     return start;
   }
   // otherwise, loop over any parents
@@ -344,7 +367,7 @@ inline string GetSchemaWithArg(const string& start, const string& arg) {
 template<typename T>
 inline T OpSchema::GetDefaultValueForOptionalArgument(const std::string &s) const {
   // check if argument exists in this schema
-  const bool argFound = OptionalArgumentExists(s, true);
+  const bool argFound = HasOptionalArgument(s, true);
 
   if (argFound || internal_arguments_.find(s) != internal_arguments_.end()) {
     Value * v;
@@ -356,28 +379,17 @@ inline T OpSchema::GetDefaultValueForOptionalArgument(const std::string &s) cons
       v = arg_pair.second.second;
     }
     ValueInst<T> * vT = dynamic_cast<ValueInst<T>*>(v);
-    DALI_ENFORCE(vT != nullptr, "Unexpected type of the default value for argument \"" + s + "\"");
+    DALI_ENFORCE(vT != nullptr, "Unexpected type of the default value for argument \"" + s +
+         "\" of schema \"" + this->name() + "\"");
     return vT->Get();
   } else {
     // get the parent schema that has the optional argument and return from there
-    string tmp = GetSchemaWithArg(Name(), s);
+    string tmp = GetSchemaWithArg(name(), s);
+    DALI_ENFORCE(!tmp.empty(), "Optional argument \"" + s + "\" is not defined for schema \""
+        + this->name() + "\"");
+
     const OpSchema& schema = SchemaRegistry::GetSchema(tmp);
     return schema.template GetDefaultValueForOptionalArgument<T>(s);
-  }
-}
-
-bool OpSchema::OptionalArgumentExists(const std::string &s,
-                                      const bool local_only) const {
-  // check just this schema for the argument
-  if (local_only) {
-    return optional_arguments_.find(s) != optional_arguments_.end();
-  } else {
-    // recurse through this schema and all parents (through inheritance tree)
-    string tmp = GetSchemaWithArg(Name(), s);
-    if (tmp.empty()) return false;
-
-    const OpSchema &schema = SchemaRegistry::GetSchema(tmp);
-    return schema.OptionalArgumentExists(s, true);
   }
 }
 

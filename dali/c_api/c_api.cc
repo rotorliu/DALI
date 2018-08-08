@@ -20,7 +20,7 @@
 #include "dali/pipeline/pipeline.h"
 #include "dali/plugin/copy.h"
 
-void CreatePipeline(PipelineHandle* pipe_handle,
+void daliCreatePipeline(daliPipelineHandle* pipe_handle,
     const char *serialized_pipeline,
     int length,
     int batch_size,
@@ -31,7 +31,6 @@ void CreatePipeline(PipelineHandle* pipe_handle,
                               batch_size,
                               num_threads,
                               device_id,
-                              -1,
                               true,
                               true);
   pipe->Build();
@@ -39,32 +38,19 @@ void CreatePipeline(PipelineHandle* pipe_handle,
   pipe_handle->ws = new dali::DeviceWorkspace();
 }
 
-void Run(PipelineHandle* pipe_handle) {
+void daliRun(daliPipelineHandle* pipe_handle) {
   dali::Pipeline* pipeline = reinterpret_cast<dali::Pipeline*>(pipe_handle->pipe);
   pipeline->RunCPU();
   pipeline->RunGPU();
 }
 
-void Output(PipelineHandle* pipe_handle) {
+void daliOutput(daliPipelineHandle* pipe_handle) {
   dali::Pipeline* pipeline = reinterpret_cast<dali::Pipeline*>(pipe_handle->pipe);
   dali::DeviceWorkspace* ws = reinterpret_cast<dali::DeviceWorkspace*>(pipe_handle->ws);
   pipeline->Outputs(ws);
 }
 
-void* TensorAt(PipelineHandle* pipe_handle, int n) {
-  dali::DeviceWorkspace* ws = reinterpret_cast<dali::DeviceWorkspace*>(pipe_handle->ws);
-  if (ws->OutputIsType<dali::CPUBackend>(n)) {
-    dali::Tensor<dali::CPUBackend> *t = new dali::Tensor<dali::CPUBackend>();
-    t->ShareData(ws->Output<dali::CPUBackend>(n));
-    return t;
-  } else {
-    dali::Tensor<dali::GPUBackend> *t = new dali::Tensor<dali::GPUBackend>();
-    t->ShareData(ws->Output<dali::GPUBackend>(n));
-    return t;
-  }
-}
-
-int64_t* ShapeAt(PipelineHandle* pipe_handle, int n) {
+int64_t* daliShapeAt(daliPipelineHandle* pipe_handle, int n) {
   dali::DeviceWorkspace* ws = reinterpret_cast<dali::DeviceWorkspace*>(pipe_handle->ws);
   int64_t* c_shape = nullptr;
   if (ws->OutputIsType<dali::CPUBackend>(n)) {
@@ -87,8 +73,8 @@ int64_t* ShapeAt(PipelineHandle* pipe_handle, int n) {
   return c_shape;
 }
 
-void CopyTensorNTo(PipelineHandle* pipe_handle, void* dst, int n) {
-  dali::TimeRange tr("CopyTensorNTo", dali::TimeRange::kGreen);
+void daliCopyTensorNTo(daliPipelineHandle* pipe_handle, void* dst, int n) {
+  dali::TimeRange tr("daliCopyTensorNTo", dali::TimeRange::kGreen);
   dali::DeviceWorkspace* ws = reinterpret_cast<dali::DeviceWorkspace*>(pipe_handle->ws);
   if (ws->OutputIsType<dali::CPUBackend>(n)) {
     dali::Tensor<dali::CPUBackend> t;
@@ -101,7 +87,7 @@ void CopyTensorNTo(PipelineHandle* pipe_handle, void* dst, int n) {
   }
 }
 
-void DeletePipeline(PipelineHandle* pipe_handle) {
+void daliDeletePipeline(daliPipelineHandle* pipe_handle) {
   dali::Pipeline* pipeline = reinterpret_cast<dali::Pipeline*>(pipe_handle->pipe);
   dali::DeviceWorkspace* ws = reinterpret_cast<dali::DeviceWorkspace*>(pipe_handle->ws);
   DALI_ENFORCE(pipeline != nullptr && ws != nullptr, "Pipeline already deleted");

@@ -52,7 +52,7 @@ namespace dali {
  * graph, the pipeline will insert the needed operations to transfer
  * the data to the gpu.
  */
-class Pipeline {
+class DLL_PUBLIC Pipeline {
  public:
   /**
    * @brief Creates a pipeline that will produce batches of size `batch_size`,
@@ -80,57 +80,50 @@ class Pipeline {
    * @param max_num_stream set an upper limit on the number of cudaStreams
    * that can be allocated by the pipeline.
    */
-  inline Pipeline(int batch_size, int num_threads, int device_id, int seed = -1,
+  DLL_PUBLIC inline Pipeline(int batch_size, int num_threads, int device_id, int seed = -1,
       bool pipelined_execution = true, bool async_execution = true,
       size_t bytes_per_sample_hint = 0, bool set_affinity = false,
       int max_num_stream = -1) :
-    built_(false), batch_size_(batch_size), num_threads_(num_threads),
-    device_id_(device_id), bytes_per_sample_hint_(bytes_per_sample_hint) {
-    DALI_ENFORCE(batch_size_ > 0, "Batch size must be greater than 0");
-    seed_.resize(MAX_SEEDS);
-    current_seed = 0;
-    if (seed != -1) {
-      std::seed_seq ss{seed};
-      ss.generate(seed_.begin(), seed_.end());
-    } else {
-      std::seed_seq ss{time(0)};
-      ss.generate(seed_.begin(), seed_.end());
-    }
-
-    if (pipelined_execution && async_execution) {
-      executor_.reset(new AsyncPipelinedExecutor(
-              batch_size, num_threads,
-              device_id, bytes_per_sample_hint,
-              set_affinity, max_num_stream));
-      executor_->Init();
-    } else if (pipelined_execution) {
-      executor_.reset(new PipelinedExecutor(
-              batch_size, num_threads,
-              device_id, bytes_per_sample_hint,
-              set_affinity, max_num_stream));
-    } else if (async_execution) {
-      DALI_FAIL("Not implemented.");
-    } else {
-      executor_.reset(new Executor(
-              batch_size, num_threads,
-              device_id, bytes_per_sample_hint,
-              set_affinity, max_num_stream));
-    }
+    built_(false) {
+    Init(batch_size, num_threads, device_id, seed,
+         pipelined_execution, async_execution,
+         bytes_per_sample_hint, set_affinity,
+         max_num_stream);
   }
 
-  inline Pipeline(const string &serialized_pipe,
-      int batch_size, int num_threads, int device_id, int seed = -1,
+  DLL_PUBLIC inline Pipeline(const string &serialized_pipe,
+      int batch_size = -1, int num_threads = -1, int device_id = -1,
       bool pipelined_execution = true, bool async_execution = true,
       size_t bytes_per_sample_hint = 0, bool set_affinity = false,
-      int max_num_stream = -1) :
-    Pipeline(batch_size, num_threads, device_id, seed, pipelined_execution,
-             async_execution, bytes_per_sample_hint, set_affinity,
-             max_num_stream) {
+      int max_num_stream = -1) : built_(false) {
     dali_proto::PipelineDef def;
     def.ParseFromString(serialized_pipe);
 
-    this->batch_size_ = def.batch_size();
-    this->device_id_ = def.device_id();
+    // If not given, take parameters from the
+    // serialized pipeline
+    if (batch_size == -1) {
+      this->batch_size_ = def.batch_size();
+    } else {
+      this->batch_size_ = batch_size;
+    }
+    if (device_id == -1) {
+      this->device_id_ = def.device_id();
+    } else {
+      this->device_id_ = device_id;
+    }
+    if (num_threads == -1) {
+      this->num_threads_ = def.num_threads();
+    } else {
+      this->num_threads_ = num_threads;
+    }
+
+    Init(this->batch_size_, this->num_threads_,
+         this->device_id_, def.seed(),
+         pipelined_execution,
+         async_execution,
+         bytes_per_sample_hint,
+         set_affinity,
+         max_num_stream);
 
     // from serialized pipeline, construct new pipeline
     // All external inputs
@@ -149,12 +142,12 @@ class Pipeline {
     }
   }
 
-  ~Pipeline() = default;
+  DLL_PUBLIC ~Pipeline() = default;
 
   /**
    * @brief Creates a placeholder for an external input with the given name
    */
-  inline void AddExternalInput(const string &name) {
+  DLL_PUBLIC inline void AddExternalInput(const string &name) {
     DALI_ENFORCE(!built_, "Alterations to the pipeline after "
         "\"Build()\" has been called are not allowed");
     // Verify that this name is unique and record it
@@ -183,7 +176,7 @@ class Pipeline {
    * @brief Sets the external input with the input name to the
    * input data.
    */
-  inline void SetExternalInput(const string &name,
+  DLL_PUBLIC inline void SetExternalInput(const string &name,
       const TensorList<CPUBackend> &tl) {
     NodeID node_id = graph_.TensorSourceID(name + "_cpu");
     DALI_ENFORCE(graph_.NodeType(node_id) == DALI_CPU,
@@ -202,7 +195,7 @@ class Pipeline {
    * @brief Sets the external input with the input name to the
    * input data.
    */
-  inline void SetExternalInput(const string &name,
+  DLL_PUBLIC inline void SetExternalInput(const string &name,
       const vector<Tensor<CPUBackend>> &tl) {
     NodeID node_id = graph_.TensorSourceID(name + "_cpu");
     DALI_ENFORCE(graph_.NodeType(node_id) == DALI_CPU,
@@ -222,37 +215,43 @@ class Pipeline {
    * 'device' argument in the OpSpec determines whether the CPU or GPU version
    * of the named operator will be added to the pipeline
    */
-  void AddOperator(OpSpec spec, const std::string& inst_name = "<no name>");
+  DLL_PUBLIC void AddOperator(OpSpec spec, const std::string& inst_name = "<no name>");
 
   /**
    * @brief Returns the graph node with Operator
    * with a given name
    */
-  OpNode * GetOperatorNode(const std::string& name);
+  DLL_PUBLIC OpNode * GetOperatorNode(const std::string& name);
 
   /**
    * @brief Performs some checks on the user-constructed pipeline, setups data
    * for intermediate results, and marks as ready for execution. The input
    * vector specifies the name and device of the desired outputs of the pipeline.
    */
-  void Build(vector<std::pair<string, string>> output_names);
+  DLL_PUBLIC void Build(vector<std::pair<string, string>> output_names);
 
   /**
    * @brief Build a pipeline from deserialized output (name, device) pairs
    */
-  void Build() {
+  DLL_PUBLIC void Build() {
     Build(this->output_names_);
   }
+
+  /*
+   * @brief Set name output_names of the pipeline. Used to update the graph without
+   * running the executor.
+   */
+  void SetOutputNames(vector<std::pair<string, string>> output_names);
 
   /**
    * @brief Run the cpu portion of the pipeline.
    */
-  void RunCPU();
+  DLL_PUBLIC void RunCPU();
 
   /**
    * @brief Run the gpu portion of the pipeline.
    */
-  void RunGPU();
+  DLL_PUBLIC void RunGPU();
 
   /**
    * @brief Fills the input device workspace with the output of the pipeline.
@@ -260,47 +259,75 @@ class Pipeline {
    * must be called prior to calling this or this method will result in
    * deadlock.
    */
-  void Outputs(DeviceWorkspace *ws);
+  DLL_PUBLIC void Outputs(DeviceWorkspace *ws);
 
   /**
    * @brief serializes the pipe to a protobuf
    */
-  string SerializeToProtobuf() const;
+  DLL_PUBLIC string SerializeToProtobuf() const;
 
   /**
    * @brief Save graph in DOT direct graph format
    * in filename.
    */
-  void SaveGraphToDotFile(const std::string filename);
+  DLL_PUBLIC void SaveGraphToDotFile(const std::string filename);
 
   /**
    * @brief Returns the batch size that will be produced by the pipeline.
    */
-  inline int batch_size() const { return batch_size_; }
+  DLL_PUBLIC inline int batch_size() const { return batch_size_; }
 
   /**
    * @brief Returns the map of (node name, node's epoch size)
    * for all nodes that return a valid epoch size
    */
-  std::map<std::string, Index> EpochSize();
+  DLL_PUBLIC std::map<std::string, Index> EpochSize();
 
   /**
    * @brief Returns the number of threads used by the pipeline.
    */
-  inline int num_threads() const { return num_threads_; }
+  DLL_PUBLIC inline int num_threads() const { return num_threads_; }
 
   /**
    * @brief Returns the GPU device number used by the pipeline
    */
-  inline int device_id() const { return device_id_; }
+  DLL_PUBLIC inline int device_id() const { return device_id_; }
 
   // For testing
   template <typename T>
   friend class PipelineTest;
 
-  DISABLE_COPY_MOVE_ASSIGN(Pipeline);
+  DLL_PUBLIC DISABLE_COPY_MOVE_ASSIGN(Pipeline);
 
  private:
+  /**
+   * @brief Initializes the Pipeline internal state
+   */
+  void Init(int batch_size, int num_threads, int device_id,
+            int seed, bool pipelined_execution, bool async_execution,
+            size_t bytes_per_sample_hint, bool set_affinity,
+            int max_num_stream) {
+    this->batch_size_ = batch_size;
+    this->num_threads_ = num_threads;
+    this->device_id_ = device_id;
+    this->original_seed_ = seed;
+    this->pipelined_execution_ = pipelined_execution;
+    this->async_execution_ = async_execution;
+    this->bytes_per_sample_hint_ = bytes_per_sample_hint;
+    this->set_affinity_ = set_affinity;
+    this->max_num_stream_ = max_num_stream;
+    DALI_ENFORCE(batch_size_ > 0, "Batch size must be greater than 0");
+    seed_.resize(MAX_SEEDS);
+    current_seed_ = 0;
+    if (seed != -1) {
+      std::seed_seq ss{seed};
+      ss.generate(seed_.begin(), seed_.end());
+    } else {
+      std::seed_seq ss{time(0)};
+      ss.generate(seed_.begin(), seed_.end());
+    }
+  }
+
   using EdgeMeta = struct {
     bool has_cpu, has_gpu, has_contiguous, is_support;
   };
@@ -349,9 +376,15 @@ class Pipeline {
 
   bool built_;
   int batch_size_, num_threads_, device_id_;
+  bool pipelined_execution_;
+  bool async_execution_;
   size_t bytes_per_sample_hint_;
+  int set_affinity_;
+  int max_num_stream_;
+
   std::vector<int> seed_;
-  size_t current_seed;
+  int original_seed_;
+  size_t current_seed_;
 
   OpGraph graph_;
   std::unique_ptr<Executor> executor_;
@@ -362,6 +395,7 @@ class Pipeline {
   // serialized form
   vector<string> external_inputs_;
   vector<std::pair<string, OpSpec>> op_specs_;
+  vector<bool> op_specs_to_serialize_;
   vector<std::pair<string, string>> output_names_;
 };
 

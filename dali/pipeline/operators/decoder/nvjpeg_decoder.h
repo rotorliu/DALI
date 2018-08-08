@@ -131,7 +131,7 @@ class nvJPEGDecoder : public Operator<MixedBackend> {
       CUDA_CALL(cudaEventCreate(&master_event_));
   }
 
-  ~nvJPEGDecoder() {
+  ~nvJPEGDecoder() noexcept(false) {
     DeviceGuard g(device_id_);
     for (int i = 0; i < max_streams_; ++i) {
       NVJPEG_CALL(nvjpegJpegStateDestroy(states_[i]));
@@ -318,7 +318,7 @@ class nvJPEGDecoder : public Operator<MixedBackend> {
           stream));
 
     // Ensure previous GPU work is finished
-    CUDA_CALL(cudaStreamSynchronize(streams_[stream_idx]));
+    CUDA_CALL(cudaStreamSynchronize(stream));
 
     // Memcpy of Huffman co-efficients to device
     NVJPEG_CALL(nvjpegDecodePhaseTwo(handle, state, stream));

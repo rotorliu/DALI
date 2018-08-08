@@ -17,25 +17,55 @@
 
 #include <inttypes.h>
 
+#include "dali/api_helper.h"
+
 // Trick to bypass gcc4.9 old ABI name mangling used by TF
 extern "C" {
-  struct PipelineHandle {
+  struct daliPipelineHandle {
     void* pipe;
     void* ws;
   };
 
-  void CreatePipeline(PipelineHandle* pipe_handle,
+  /**
+   * @brief Create DALI pipeline. Setting batch_size,
+   * num_threads or device_id here overrides
+   * values stored in the serialized pipeline.
+   */
+  DLL_PUBLIC void daliCreatePipeline(daliPipelineHandle* pipe_handle,
       const char *serialized_pipeline,
       int length,
-      int batch_size,
-      int num_threads,
-      int device_id);
-  void Run(PipelineHandle* pipe_handle);
-  void Output(PipelineHandle* pipe_handle);
-  void* TensorAt(PipelineHandle* pipe_handle, int n);
-  int64_t* ShapeAt(PipelineHandle* pipe_handle, int n);
-  void CopyTensorNTo(PipelineHandle* pipe_handle, void* dst, int n);
-  void DeletePipeline(PipelineHandle* pipe_handle);
+      int batch_size = -1,
+      int num_threads = -1,
+      int device_id = -1);
+
+  /**
+   * @brief Start the execution of the pipeline.
+   */
+  DLL_PUBLIC void daliRun(daliPipelineHandle* pipe_handle);
+
+  /**
+   * @brief Wait till the output of the pipeline is ready.
+   */
+  DLL_PUBLIC void daliOutput(daliPipelineHandle* pipe_handle);
+
+  /**
+   * @brief Return the shape of the output tensor
+   * stored at position `n` in the pipeline.
+   * This function may only be called after
+   * calling Output function.
+   */
+  DLL_PUBLIC int64_t* daliShapeAt(daliPipelineHandle* pipe_handle, int n);
+
+  /**
+   * @brief Copy the output tensor stored
+   * at position `n` in the pipeline.
+   */
+  DLL_PUBLIC void daliCopyTensorNTo(daliPipelineHandle* pipe_handle, void* dst, int n);
+
+  /**
+   * @brief Delete the pipeline object.
+   */
+  DLL_PUBLIC void daliDeletePipeline(daliPipelineHandle* pipe_handle);
 }
 
 #endif  // DALI_C_API_C_API_H_

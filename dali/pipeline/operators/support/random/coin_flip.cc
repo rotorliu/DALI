@@ -19,7 +19,7 @@ namespace dali {
 
 void CoinFlip::RunImpl(SupportWorkspace * ws, const int idx) {
   DALI_ENFORCE(idx == 0, "CoinFlip does not support multiple input sets.");
-  auto *output = ws->Output(idx);
+  auto *output = ws->Output<CPUBackend>(idx);
   output->Resize({batch_size_});
 
   int * out_data = output->template mutable_data<int>();
@@ -37,7 +37,6 @@ DALI_SCHEMA(CoinFlip)
   .NumInput(0)
   .NumOutput(1)
   .AddOptionalArg("probability",
-      R"code(`float`
-      Probability of returning 1.)code", 0.5f);
+      R"code(Probability of returning 1.)code", 0.5f);
 
 }  // namespace dali

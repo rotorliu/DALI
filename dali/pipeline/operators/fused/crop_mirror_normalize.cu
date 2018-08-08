@@ -55,7 +55,7 @@ __global__ void BatchedCropMirrorNormalizePermuteKernel(
             int in_idx = c + C*mirrored_width + in_step*h;  // HWC, mirrored
             int out_idx = c*H*W + h*W + w;  // CHW
 
-            output_ptr[out_idx] = static_cast<Out>(
+            output_ptr[out_idx] = StaticCastGpu<Out>(
                 (static_cast<float>(input_ptr[in_idx])-mean[c]) * inv_std[c]);
           }
         }
@@ -68,7 +68,7 @@ __global__ void BatchedCropMirrorNormalizePermuteKernel(
             int in_idx = c + C*w + in_step*h;  // HWC
             int out_idx = c*H*W + h*W + w;  // CHW
 
-            output_ptr[out_idx] = static_cast<Out>(
+            output_ptr[out_idx] = StaticCastGpu<Out>(
                 (static_cast<float>(input_ptr[in_idx])-mean[c]) * inv_std[c]);
           }
         }
@@ -81,7 +81,7 @@ __global__ void BatchedCropMirrorNormalizePermuteKernel(
           for (int w=threadIdx.x; w < W; w += blockDim.x) {
             int out_idx = c*H*W + h*W + w;  // CHW
 
-            output_ptr[out_idx] = 0;
+            output_ptr[out_idx] = StaticCastGpu<Out>(0);
           }
         }
       }
@@ -108,7 +108,7 @@ __global__ void BatchedCropMirrorNormalizePermuteKernel(
         input = (static_cast<float>(input_ptr[in_idx])-mean[c]) * inv_std[c];
       }
 
-      output_ptr[out_idx] = static_cast<Out>(input);
+      output_ptr[out_idx] = StaticCastGpu<Out>(input);
     }
   }
 }
@@ -282,6 +282,9 @@ void CropMirrorNormalize<GPUBackend>::DataDependentSetup(DeviceWorkspace *ws, co
   // Resize the output data
   output->Resize(output_shape);
 
+  // Set the layout of the output data
+  output->SetLayout(output_layout_);
+
   // Copy strides to gpu
   input_strides_gpu_.Copy(input_strides_, ws->stream());
 
@@ -304,6 +307,11 @@ void CropMirrorNormalize<GPUBackend>::DataDependentSetup(DeviceWorkspace *ws, co
 
 template<>
 void CropMirrorNormalize<GPUBackend>::RunImpl(DeviceWorkspace *ws, const int idx) {
+  // Before we start working on the next input set, we need
+  // to wait until the last one is finished. Otherwise we risk
+  // overwriting data used by the kernel called for previous image
+  if (idx != 0)
+    CUDA_CALL(cudaStreamSynchronize(ws->stream()));
   DataDependentSetup(ws, idx);
   if (output_type_ == DALI_FLOAT) {
     RunHelper<float>(ws, idx);

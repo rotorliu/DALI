@@ -45,8 +45,7 @@ void OpSchema::CheckArgs(const OpSpec &spec) const {
     req_arguments_left.insert(arg_pair.first);
   }
   for (std::string s : vec) {
-    DALI_ENFORCE(required_arguments.find(s) != required_arguments.end() ||
-        OptionalArgumentExists(s) ||
+    DALI_ENFORCE(HasArgument(s) ||
         internal_arguments_.find(s) != internal_arguments_.end(),
         "Got an unexpected argument \"" + s + "\"");
     std::set<std::string>::iterator it = req_arguments_left.find(s);
@@ -67,21 +66,11 @@ void OpSchema::CheckArgs(const OpSpec &spec) const {
 }
 
 string OpSchema::Dox() const {
-  std::string ret = "# " + Name();
-  ret += "\n\nOverview\n--------\n";
-  ret += dox_;
-  ret += "\n\nRequired Parameters\n-------------------\n";
-  for (auto arg_pair : GetRequiredArguments()) {
-    ret += " - `" + arg_pair.first + "` : " + arg_pair.second + "\n";
-  }
-  ret += "\n\nOptional Parameters\n-------------------\n";
-  for (auto arg_pair : GetOptionalArguments()) {
-    ret += " - `" + arg_pair.first + "` : " + arg_pair.second.first + "\n";
-  }
-  return ret;
+  return dox_;
 }
 
-std::map<std::string, std::string> OpSchema::GetRequiredArguments() const {
+std::map<std::string, std::pair<std::string, DALIDataType> >
+OpSchema::GetRequiredArguments() const {
   auto ret = arguments_;
   for (const auto &parent_name : parents_) {
     const OpSchema &parent = SchemaRegistry::GetSchema(parent_name);
@@ -97,6 +86,81 @@ std::map<std::string, std::pair<std::string, Value*>> OpSchema::GetOptionalArgum
     const OpSchema &parent = SchemaRegistry::GetSchema(parent_name);
     const auto &parent_args = parent.GetOptionalArguments();
     ret.insert(parent_args.begin(), parent_args.end());
+  }
+  return ret;
+}
+
+std::string OpSchema::GetArgumentDox(const std::string &name) const {
+  DALI_ENFORCE(HasArgument(name), "Argument \"" + name +
+      "\" is not supported by operator \"" + this->name() + "\".");
+  if (HasRequiredArgument(name)) {
+    return GetRequiredArguments().at(name).first;
+  } else {
+    // optional argument
+    return GetOptionalArguments().at(name).first;
+  }
+}
+
+DALIDataType OpSchema::GetArgumentType(const std::string &name) const {
+  DALI_ENFORCE(HasArgument(name), "Argument \"" + name +
+      "\" is not supported by operator \"" + this->name() + "\".");
+  if (HasRequiredArgument(name)) {
+    return GetRequiredArguments().at(name).second;
+  } else {
+    // optional argument
+    return GetOptionalArguments().at(name).second->GetTypeID();
+  }
+}
+
+std::string OpSchema::GetArgumentDefaultValueString(const std::string &name) const {
+  DALI_ENFORCE(HasOptionalArgument(name), "Argument \"" + name +
+      "\" is either not supported by operator \"" + this->name() + "\" or is not optional.");
+  return GetOptionalArguments().at(name).second->ToString();
+}
+
+std::vector<std::string> OpSchema::GetArgumentNames() const {
+  std::vector<std::string> ret;
+  for (auto &arg_pair : GetRequiredArguments()) {
+    ret.push_back(arg_pair.first);
+  }
+  for (auto &arg_pair : GetOptionalArguments()) {
+    ret.push_back(arg_pair.first);
+  }
+  return ret;
+}
+
+bool OpSchema::HasRequiredArgument(const std::string &name, const bool local_only) const {
+  bool ret = arguments_.find(name) != arguments_.end();
+  if (ret || local_only) {
+    return ret;
+  }
+  for (const auto &p : parents_) {
+    const OpSchema &parent = SchemaRegistry::GetSchema(p);
+    ret = ret || parent.HasRequiredArgument(name);
+  }
+  return ret;
+}
+
+bool OpSchema::HasOptionalArgument(const std::string &name, const bool local_only) const {
+  bool ret = optional_arguments_.find(name) != optional_arguments_.end();
+  if (ret || local_only) {
+    return ret;
+  }
+  for (const auto &p : parents_) {
+    const OpSchema &parent = SchemaRegistry::GetSchema(p);
+    ret = ret || parent.HasOptionalArgument(name);
+  }
+  return ret;
+}
+
+bool OpSchema::IsTensorArgument(const std::string &name) const {
+  bool ret = tensor_arguments_.find(name) != tensor_arguments_.end();
+  if (ret) {
+    return ret;
+  }
+  for (const auto &p : parents_) {
+    const OpSchema &parent = SchemaRegistry::GetSchema(p);
+    ret = ret || parent.IsTensorArgument(name);
   }
   return ret;
 }

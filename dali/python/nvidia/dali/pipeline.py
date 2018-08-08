@@ -18,20 +18,58 @@ from nvidia.dali import backend as b
 from nvidia.dali import tensor as nt
 
 class Pipeline(object):
-    def __init__(self, batch_size, num_threads, device_id, seed = -1,
+    """Pipeline class encapsulates all data required to define and run
+    DALI input pipeline.
+
+    Parameters
+    ----------
+    `batch_size` : int, optional, default = -1
+                   Batch size of the pipeline. Negative values for this parameter
+                   are invalid - the default value may only be used with
+                   serialized pipeline (the value stored in serialized pipeline
+                   is used instead).
+    `num_threads` : int, optional, default = -1
+                    Number of CPU threads used by the pipeline.
+                    Negative values for this parameter are invalid - the default
+                    value may only be used with serialized pipeline (the value
+                    stored in serialized pipeline is used instead).
+    `device_id` : int, optional, default = -1
+                  Id of GPU used by the pipeline.
+                  Negative values for this parameter are invalid - the default
+                  value may only be used with serialized pipeline (the value
+                  stored in serialized pipeline is used instead).
+    `seed` : int, optional, default = -1
+             Seed used for random number generation. Leaving the default value
+             for this parameter results in random seed.
+    `exec_pipelined` : bool, optional, default = True
+                       Whether to execute the pipeline in a way that enables
+                       overlapping CPU and GPU computation, typically resulting
+                       in faster execution speed, but larger memory consumption.
+    `exec_async` : bool, optional, default = True
+                   Whether to execute the pipeline asynchronously.
+                   This makes :meth:`nvidia.dali.pipeline.Pipeline.run` method
+                   run asynchronously with respect to the calling Python thread.
+                   In order to synchronize with the pipeline one needs to call
+                   :meth:`nvidia.dali.pipeline.Pipeline.outputs` method.
+    `bytes_per_sample` : int, optional, default = 0
+                         A hint for DALI for how much memory to use for its tensors.
+    `set_affinity` : bool, optional, default = False
+                     Whether to set CPU core affinity to the one closest to the
+                     GPU being used.
+    `max_streams` : int, optional, default = -1
+                    Limit the number of CUDA streams used by the executor.
+                    Value of -1 does not impose a limit.
+                    This parameter is currently unused (and behavior of
+                    unrestricted number of streams is assumed).
+    """
+    def __init__(self, batch_size = -1, num_threads = -1, device_id = -1, seed = -1,
                  exec_pipelined=True, exec_async=True,
                  bytes_per_sample=0, set_affinity=False,
                  max_streams=-1):
-        self._pipe = b.Pipeline(batch_size,
-                                num_threads,
-                                device_id,
-                                seed,
-                                exec_pipelined,
-                                exec_async,
-                                bytes_per_sample,
-                                set_affinity,
-                                max_streams)
-        self.seed = seed
+        self._batch_size = batch_size
+        self._num_threads = num_threads
+        self._device_id = device_id
+        self._seed = seed
         self._exec_pipelined = exec_pipelined
         self._built = False
         self._first_iter = True
@@ -44,22 +82,49 @@ class Pipeline(object):
 
     @property
     def batch_size(self):
-        return self._pipe.batch_size()
+        """Batch size."""
+        return self._batch_size
 
     @property
     def num_threads(self):
-        return self._pipe.num_threads()
+        """Number of CPU threads used by the pipeline."""
+        return self._num_threads
 
     @property
     def device_id(self):
-        return self._pipe.device_id()
+        """Id of the GPU used by the pipeline."""
+        return self._device_id
 
     def epoch_size(self, name = None):
+        """Epoch size of a pipeline.
+
+        If the `name` parameter is `None`, returns a dictionary of pairs
+        `(reader name, epoch size for that reader)`.
+        If the `name` parameter is not `None`, returns epoch size for that
+        reader.
+
+        Parameters
+        ----------
+        name : str, optional, default = None
+               The reader which should be used to obtain epoch size.
+        """
+
+        if not self._built:
+            raise RuntimeError("Pipeline must be builti first.")
         if name is not None:
             return self._pipe.epoch_size(name)
         return self._pipe.epoch_size()
 
     def _prepare_graph(self):
+        self._pipe = b.Pipeline(self._batch_size,
+                                self._num_threads,
+                                self._device_id,
+                                self._seed,
+                                self._exec_pipelined,
+                                self._exec_async,
+                                self._bytes_per_sample,
+                                self._set_affinity,
+                                self._max_streams)
         outputs = self.define_graph()
         if (not isinstance(outputs, tuple) and
             not isinstance(outputs, list)):
@@ -117,6 +182,11 @@ class Pipeline(object):
         self._names_and_devices = [(t.name, t.device) for t in outputs]
 
     def build(self):
+        """Build the pipeline.
+
+        Pipeline needs to be built in order to run it standalone.
+        Framework-specific plugins handle this step automatically.
+        """
         if self._built:
             return
 
@@ -127,6 +197,10 @@ class Pipeline(object):
         self._built = True
 
     def feed_input(self, ref, data):
+        """Bind the NumPy array to a tensor produced by ExternalSource
+        operator."""
+        if not self._built:
+            raise RuntimeError("Pipeline must be built first.")
         if not isinstance(ref, nt.TensorReference):
             raise TypeError(
                 "Expected argument one to "
@@ -143,57 +217,102 @@ class Pipeline(object):
             inp = nt.TensorListCPU(data)
             self._pipe.SetExternalTLInput(ref.name, inp)
 
-    def run_cpu(self):
+    def _run_cpu(self):
+        """Run CPU portion of the pipeline."""
+        if not self._built:
+            raise RuntimeError("Pipeline must be built first.")
         self._pipe.RunCPU()
 
-    def run_gpu(self):
+    def _run_gpu(self):
+        """Run GPU portion of the pipeline."""
+        if not self._built:
+            raise RuntimeError("Pipeline must be built first.")
         self._pipe.RunGPU()
 
     def outputs(self):
+        """Returns the outputs of the pipeline.
+
+        If the pipeline is executed asynchronously, this function blocks
+        until the results become available."""
+        if not self._built:
+            raise RuntimeError("Pipeline must be built first.")
         return self._pipe.Outputs()
 
     def run(self):
-        if self._first_iter and self._exec_pipelined:
-            self.iter_setup()
-            self.run_cpu()
-            self.run_gpu()
-            self._first_iter = False
-        self.iter_setup()
-        self.run_cpu()
-        self.run_gpu()
+        """Run the pipeline and return the result.
+
+        If the pipeline was created with `exec_async` option set to `True`,
+        this function will also start prefetching the next iteration for
+        faster execution."""
+        self._start_run()
         return self.outputs()
 
-    def serialize(self):
+    def _start_run(self):
+        """Start running the pipeline without waiting for its results.
+
+        If the pipeline was created with `exec_async` option set to `True`,
+        this function will return without waiting for the execution to end."""
         if not self._built:
-            self.build()
+            raise RuntimeError("Pipeline must be built first.")
+        if self._first_iter and self._exec_pipelined:
+            self.iter_setup()
+            self._run_cpu()
+            self._run_gpu()
+            self._first_iter = False
+        self.iter_setup()
+        self._run_cpu()
+        self._run_gpu()
+
+    def serialize(self):
+        """Serialize the pipeline to a Protobuf string."""
+        if not self._prepared:
+            self._prepare_graph()
+            self._pipe.SetOutputNames(self._names_and_devices)
         return self._pipe.SerializeToProtobuf()
 
     def deserialize_and_build(self, serialized_pipeline):
-        new_pipe = b.Pipeline(serialized_pipeline,
-                              self.batch_size,
-                              self.num_threads,
-                              self.device_id,
-                              self.seed,
-                              self._exec_pipelined,
-                              self._exec_async,
-                              self._bytes_per_sample,
-                              self._set_affinity,
-                              self._max_streams)
-        self._pipe = new_pipe
+        """Deserialize and build the pipeline given in serialized form.
+
+        Parameters
+        ----------
+        serialized_pipeline : str
+                              Serialized pipeline.
+        """
+        self._pipe = b.Pipeline(serialized_pipeline,
+                                self._batch_size,
+                                self._num_threads,
+                                self._device_id,
+                                self._exec_pipelined,
+                                self._exec_async,
+                                self._bytes_per_sample,
+                                self._set_affinity,
+                                self._max_streams)
         self._prepared = True
         self._pipe.Build()
         self._built = True
 
     def save_graph_to_dot_file(self, filename):
+        """Saves the pipeline graph to a file.
+
+        Parameters
+        ----------
+        filename : str
+                   Name of the file to which the graph is written.
+        """
+        if not self._built:
+            raise RuntimeError("Pipeline must be built first.")
         self._pipe.SaveGraphToDotFile(filename)
 
-    # defined by the user to construct their graph of operations.
-    # this returns a list of output TensorReferences that we can
-    # trace back to add them to the graph
     def define_graph(self):
+        """This function is defined by the user to construct the
+        graph of operations for their pipeline.
+
+        It returns a list of output `TensorReference`."""
         raise NotImplementedError
 
-    # Can be overriden by user-defined pipeline to perform any
-    # needed setup for each iteration, e.g. feed in input data
     def iter_setup(self):
+        """This function can be overriden by user-defined
+        pipeline to perform any needed setup for each iteration.
+        For example, one can use this function to feed the input
+        data from NumPy arrays."""
         pass
