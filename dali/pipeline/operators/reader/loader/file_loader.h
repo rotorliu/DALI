@@ -24,6 +24,7 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include <algorithm>
 
 #include "dali/common.h"
 #include "dali/pipeline/operators/reader/loader/loader.h"
@@ -33,78 +34,44 @@ namespace dali {
 
 namespace filesystem {
 
-void assemble_file_list(const std::string& path, int label,
-                        std::vector<std::pair<std::string, int>> *file_label_pairs) {
-  DIR *dir = opendir(path.c_str());
-  struct dirent *entry;
-
-  while ((entry = readdir(dir))) {
-    std::string full_path = path + "/" + std::string{entry->d_name};
-    struct stat s;
-    stat(full_path.c_str(), &s);
-    if (S_ISREG(s.st_mode)) {
-      file_label_pairs->push_back(std::make_pair(full_path, label));
-    }
-  }
-  closedir(dir);
-}
-
-vector<std::pair<string, int>> traverse_directories(const std::string& path) {
-  // open the root
-  DIR *dir = opendir(path.c_str());
-
-  struct dirent *entry;
-  int dir_count = 0;
-
-  std::vector<std::pair<std::string, int>> file_label_pairs;
-
-  while ((entry = readdir(dir))) {
-    struct stat s;
-    std::string full_path = path + "/" + std::string(entry->d_name);
-    int ret = stat(full_path.c_str(), &s);
-    DALI_ENFORCE(ret == 0,
-        "Could not access " + full_path + " during directory traversal.");
-    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
-    if (S_ISDIR(s.st_mode)) {
-      assemble_file_list(full_path, dir_count, &file_label_pairs);
-      dir_count++;
-    }
-  }
-  printf("read %lu files from %d directories\n", file_label_pairs.size(), dir_count);
-
-  closedir(dir);
-
-  return file_label_pairs;
-}
+vector<std::pair<string, int>> traverse_directories(const std::string& path);
 
 }  // namespace filesystem
 
-class FileLoader : public Loader<CPUBackend> {
+struct ImageLabelWrapper {
+  Tensor<CPUBackend> image;
+  int label;
+};
+
+class FileLoader : public Loader<CPUBackend, ImageLabelWrapper> {
  public:
-  explicit FileLoader(const OpSpec& spec)
-    : Loader<CPUBackend>(spec),
+  explicit inline FileLoader(const OpSpec& spec,
+      vector<std::pair<string, int>> image_label_pairs = std::vector<std::pair<string, int>>())
+    : Loader<CPUBackend, ImageLabelWrapper>(spec),
       file_root_(spec.GetArgument<string>("file_root")),
+      image_label_pairs_(image_label_pairs),
       current_index_(0) {
     file_list_ = spec.GetArgument<string>("file_list");
-    if (file_list_ == "") {
-      image_label_pairs_ = filesystem::traverse_directories(file_root_);
-    } else {
-      // load (path, label) pairs from list
-      std::ifstream s(file_list_);
-      DALI_ENFORCE(s.is_open());
 
-      string image_file;
-      int label;
-      while (s >> image_file >> label) {
-        auto p = std::make_pair(file_root_ + "/" + image_file, label);
-        image_label_pairs_.push_back(p);
+    if (image_label_pairs_.empty()) {
+      if (file_list_ == "") {
+        image_label_pairs_ = filesystem::traverse_directories(file_root_);
+      } else {
+        // load (path, label) pairs from list
+        std::ifstream s(file_list_);
+        DALI_ENFORCE(s.is_open());
+
+        string image_file;
+        int label;
+        while (s >> image_file >> label) {
+          auto p = std::make_pair(image_file, label);
+          image_label_pairs_.push_back(p);
+        }
+        DALI_ENFORCE(s.eof(), "Wrong format of file_list.");
       }
-      DALI_ENFORCE(s.eof(), "Wrong format of file_list.");
     }
 
     DALI_ENFORCE(Size() > 0, "No files found.");
-    // first / only shard: no change needed
-    if (shard_id_ == 0) return;
 
     if (shuffle_) {
       // seeded with hardcoded value to get
@@ -113,41 +80,17 @@ class FileLoader : public Loader<CPUBackend> {
       std::shuffle(image_label_pairs_.begin(), image_label_pairs_.end(), g);
     }
 
-    int samples_per_shard = Size() / num_shards_;
-    current_index_ = shard_id_ * samples_per_shard;
+    current_index_ = start_index(shard_id_, num_shards_, Size());
   }
 
-  void ReadSample(Tensor<CPUBackend>* tensor) override {
-    auto image_pair = image_label_pairs_[current_index_++];
+  void PrepareEmpty(ImageLabelWrapper *tesor) override;
+  void ReadSample(ImageLabelWrapper* tensor) override;
 
-    // handle wrap-around
-    if (current_index_ == Size()) {
-      current_index_ = 0;
-    }
-
-    FileStream *current_image = FileStream::Open(image_pair.first);
-    Index image_size = current_image->Size();
-
-    // resize tensor to hold [image, label]
-    tensor->Resize({image_size + static_cast<Index>(sizeof(int))});
-
-    // copy the image
-    current_image->Read(tensor->mutable_data<uint8_t>(), image_size);
-
-    // close the file handle
-    current_image->Close();
-
-    // copy the label
-    *(reinterpret_cast<int*>(&tensor->mutable_data<uint8_t>()[image_size])) = image_pair.second;
-  }
-
-  Index Size() override {
-    return static_cast<Index>(image_label_pairs_.size());
-  }
+  Index Size() override;
 
  protected:
-  using Loader<CPUBackend>::shard_id_;
-  using Loader<CPUBackend>::num_shards_;
+  using Loader<CPUBackend, ImageLabelWrapper>::shard_id_;
+  using Loader<CPUBackend, ImageLabelWrapper>::num_shards_;
 
   string file_root_, file_list_;
   vector<std::pair<string, int>> image_label_pairs_;

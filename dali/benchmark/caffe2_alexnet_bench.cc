@@ -37,7 +37,7 @@ BENCHMARK_DEFINE_F(C2Alexnet, Caffe2Pipe)(benchmark::State& st) { // NOLINT
   Pipeline pipe(
       batch_size,
       num_thread,
-      0, -1, pipelined,
+      0, -1, pipelined, 2,
       async);
 
   dali::string path(std::getenv("DALI_TEST_CAFFE2_LMDB_PATH"));
@@ -81,7 +81,7 @@ BENCHMARK_DEFINE_F(C2Alexnet, Caffe2Pipe)(benchmark::State& st) { // NOLINT
       .AddArg("device", "cpu")
       .AddArg("resize_x", 256)
       .AddArg("resize_y", 256)
-      .AddArg("crop", vector<int>{224, 224})
+      .AddArg("crop", vector<float>{224, 224})
       .AddArg("mirror_prob", 0.5f)
       .AddInput("images", "cpu")
       .AddArgumentInput("crop_pos_x", "uniform1")
@@ -165,7 +165,7 @@ BENCHMARK_DEFINE_F(C2Alexnet, HybridPipe)(benchmark::State& st) { // NOLINT
   Pipeline pipe(
       batch_size,
       num_thread,
-      0, -1, pipelined,
+      0, -1, pipelined, 2,
       async);
 
   pipe.AddOperator(
@@ -223,7 +223,7 @@ BENCHMARK_DEFINE_F(C2Alexnet, HybridPipe)(benchmark::State& st) { // NOLINT
       OpSpec("CropMirrorNormalize")
       .AddArg("device", "gpu")
       .AddArg("output_type", DALI_FLOAT16)
-      .AddArg("crop", vector<int>{224, 224})
+      .AddArg("crop", vector<float>{224, 224})
       .AddArg("image_type", img_type)
       .AddArg("mean", vector<float>{128, 128, 128})
       .AddArg("std", vector<float>{1, 1, 1})

@@ -32,7 +32,7 @@ void ColorTwistBase<GPUBackend>::RunImpl(DeviceWorkspace *ws, const int idx) {
   cudaStream_t old_stream = nppGetStream();
   nppSetStream(ws->stream());
 
-  for (int i = 0; i < input.ntensor(); ++i) {
+  for (size_t i = 0; i < input.ntensor(); ++i) {
     if (!augments_.empty()) {
       float matrix[nDim][nDim];
       float * m = reinterpret_cast<float*>(matrix);
@@ -41,7 +41,7 @@ void ColorTwistBase<GPUBackend>::RunImpl(DeviceWorkspace *ws, const int idx) {
         augments_[j]->Prepare(i, spec_, ws);
         (*augments_[j])(m);
       }
-      DALISize size;
+      NppiSize size;
       size.height = input.tensor_shape(i)[0];
       size.width = input.tensor_shape(i)[1];
       const int nStep = C_ * size.width;  // W * C
@@ -67,5 +67,6 @@ DALI_REGISTER_OPERATOR(Brightness, BrightnessAdjust<GPUBackend>, GPU);
 DALI_REGISTER_OPERATOR(Contrast, ContrastAdjust<GPUBackend>, GPU);
 DALI_REGISTER_OPERATOR(Hue, HueAdjust<GPUBackend>, GPU);
 DALI_REGISTER_OPERATOR(Saturation, SaturationAdjust<GPUBackend>, GPU);
+DALI_REGISTER_OPERATOR(ColorTwist, ColorTwistAdjust<GPUBackend>, GPU);
 
 }  // namespace dali

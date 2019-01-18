@@ -27,6 +27,7 @@
 #include "dali/util/user_stream.h"
 #include "dali/pipeline/operators/reader/parser/tfrecord_parser.h"
 #include "dali/plugin/copy.h"
+#include "dali/plugin/plugin_manager.h"
 
 namespace dali {
 namespace python {
@@ -51,6 +52,8 @@ static std::string FormatStrFromType(TypeInfo type) {
     return py::format_descriptor<double>::format();
   } else if (IsType<bool>(type)) {
     return py::format_descriptor<bool>::format();
+  } else if (IsType<float16>(type)) {
+    return "f2";
   } else {
     DALI_FAIL("Cannot convert type " + type.name() +
         " to format descriptor string");
@@ -74,6 +77,8 @@ static TypeInfo TypeFromFormatStr(std::string format) {
     return TypeInfo::Create<double>();
   } else if (format == py::format_descriptor<bool>::format()) {
     return TypeInfo::Create<bool>();
+  } else if (format == "f2") {
+    return TypeInfo::Create<float16>();
   } else {
     DALI_FAIL("Cannot create type for unknow format string: " + format);
   }
@@ -143,7 +148,7 @@ void ExposeTensor(py::module &m) { // NOLINT
           PyObject *p_ptr = p.ptr();
           PyObject *ptr_as_int = PyObject_GetAttr(p_ptr, PyUnicode_FromString("value"));
           void *ptr = PyLong_AsVoidPtr(ptr_as_int);
-          CopyToExternalTensor(t, ptr);
+          CopyToExternalTensor(t, ptr, CPU);
         },
       "ptr"_a,
       R"code(
@@ -176,7 +181,7 @@ void ExposeTensor(py::module &m) { // NOLINT
           PyObject *p_ptr = p.ptr();
           PyObject *ptr_as_int = PyObject_GetAttr(p_ptr, PyUnicode_FromString("value"));
           void *ptr = PyLong_AsVoidPtr(ptr_as_int);
-          CopyToExternalTensor(t, ptr);
+          CopyToExternalTensor(t, ptr, GPU);
         },
       "ptr"_a,
       R"code(
@@ -241,7 +246,7 @@ void ExposeTensorList(py::module &m) { // NOLINT
     .def("at", [](TensorList<CPUBackend> &t, Index id) -> py::array {
           DALI_ENFORCE(IsValidType(t.type()), "Cannot produce "
               "buffer info for tensor w/ invalid type.");
-          DALI_ENFORCE(id < t.ntensor(), "Index is out-of-range.");
+          DALI_ENFORCE(static_cast<size_t>(id) < t.ntensor(), "Index is out-of-range.");
           DALI_ENFORCE(id >= 0, "Index is out-of-range.");
 
           std::vector<ssize_t> shape(t.tensor_shape(id).size()), stride(t.tensor_shape(id).size());
@@ -266,6 +271,43 @@ void ExposeTensorList(py::module &m) { // NOLINT
       Parameters
       ----------
       )code")
+    .def("as_array", [](TensorList<CPUBackend> &t) -> py::array {
+          DALI_ENFORCE(IsValidType(t.type()), "Cannot produce "
+              "buffer info for tensor w/ invalid type.");
+          DALI_ENFORCE(t.IsDenseTensor(),
+                      "Tensors in the list must have the same shape");
+
+          std::vector<ssize_t> shape(t.tensor_shape(0).size() + 1);
+          std::vector<ssize_t> stride(t.tensor_shape(0).size() + 1);
+          size_t dim_prod = 1;
+          for (size_t i = 0; i < shape.size(); ++i) {
+            if (i == 0) {
+              shape[i] = t.shape().size();
+            } else {
+              shape[i] = t.tensor_shape(0)[i - 1];
+            }
+
+            // We iterate over stride backwards
+            stride[(stride.size()-1) - i] = t.type().size()*dim_prod;
+            if (i == shape.size() - 1) {
+              dim_prod *= t.shape().size();
+            } else {
+              dim_prod *= t.tensor_shape(0)[(shape.size()-2) - i];
+            }
+          }
+
+          return py::array(py::buffer_info(
+              t.raw_mutable_data(),
+              t.type().size(),
+              FormatStrFromType(t.type()),
+              shape.size(), shape, stride));
+        },
+      R"code(
+      Returns TensorList as a numpy array. TensorList must be dense.
+
+      Parameters
+      ----------
+      )code")
     .def("__len__", [](TensorList<CPUBackend> &t) {
           return t.ntensor();
         })
@@ -283,7 +325,7 @@ void ExposeTensorList(py::module &m) { // NOLINT
           PyObject *p_ptr = p.ptr();
           PyObject *ptr_as_int = PyObject_GetAttr(p_ptr, PyUnicode_FromString("value"));
           void *ptr = PyLong_AsVoidPtr(ptr_as_int);
-          CopyToExternalTensor(&t, ptr);
+          CopyToExternalTensor(&t, ptr, CPU);
         },
       R"code(
       Copy the contents of this `TensorList` to an external pointer
@@ -340,7 +382,7 @@ void ExposeTensorList(py::module &m) { // NOLINT
           PyObject *p_ptr = p.ptr();
           PyObject *ptr_as_int = PyObject_GetAttr(p_ptr, PyUnicode_FromString("value"));
           void *ptr = PyLong_AsVoidPtr(ptr_as_int);
-          CopyToExternalTensor(&t, ptr);
+          CopyToExternalTensor(&t, ptr, GPU);
         },
       R"code(
       Copy the contents of this `TensorList` to an external pointer
@@ -352,6 +394,19 @@ void ExposeTensorList(py::module &m) { // NOLINT
       Parameters
       ----------
       )code")
+    .def("at",
+        [](TensorList<GPUBackend> &t, Index id) -> std::unique_ptr<Tensor<GPUBackend>> {
+          std::unique_ptr<Tensor<GPUBackend>> ptr(new Tensor<GPUBackend>());
+          ptr->ShareData(&t, id);
+          return ptr;
+        },
+      R"code(
+      Returns a tensor at given position in the list.
+
+      Parameters
+      ----------
+      )code",
+      py::keep_alive<0, 1>())
     .def("as_tensor", &TensorList<GPUBackend>::AsTensor,
       R"code(
       Returns a tensor that is a view of this `TensorList`.
@@ -380,6 +435,15 @@ static vector<string> GetRegisteredSupportOps() {
 static const OpSchema &GetSchema(const string &name) {
   return SchemaRegistry::GetSchema(name);
 }
+
+static constexpr int GetCxx11AbiFlag() {
+#ifdef _GLIBCXX_USE_CXX11_ABI
+  return _GLIBCXX_USE_CXX11_ABI;
+#else
+  return 0;
+#endif
+}
+
 #ifdef DALI_BUILD_PROTO3
 typedef dali::TFRecordParser::FeatureType TFFeatureType;
 typedef dali::TFRecordParser::Feature TFFeature;
@@ -417,6 +481,10 @@ PYBIND11_MODULE(backend_impl, m) {
   // DALI Init function
   m.def("Init", &DALIInit);
 
+  m.def("LoadLibrary", &PluginManager::LoadLibrary);
+
+  m.def("GetCxx11AbiFlag", &GetCxx11AbiFlag);
+
   // Types
   py::module types_m = m.def_submodule("types");
   types_m.doc() = "Datatypes and options used by DALI";
@@ -429,6 +497,7 @@ PYBIND11_MODULE(backend_impl, m) {
     .value("FLOAT", DALI_FLOAT)
     .value("INT64", DALI_INT64)
     .value("INT32", DALI_INT32)
+    .value("INT16", DALI_INT16)
     .value("BOOL", DALI_BOOL)
     .value("STRING", DALI_STRING)
     .value("_BOOL_VEC", DALI_BOOL_VEC)
@@ -451,6 +520,7 @@ PYBIND11_MODULE(backend_impl, m) {
     .value("RGB", DALI_RGB)
     .value("BGR", DALI_BGR)
     .value("GRAY", DALI_GRAY)
+    .value("YCbCr", DALI_YCbCr)
     .export_values();
 
   // DALIInterpType
@@ -481,19 +551,21 @@ PYBIND11_MODULE(backend_impl, m) {
   // Pipeline class
   py::class_<Pipeline>(m, "Pipeline")
     .def(py::init(
-            [](int batch_size, int num_threads, int device_id, int seed = -1,
-                bool pipelined_execution = true, bool async_execution = true,
-                size_t bytes_per_sample_hint = 0, bool set_affinity = false,
-                int max_num_stream = -1) {
+            [](int batch_size, int num_threads, int device_id, int64_t seed = -1,
+                bool pipelined_execution = true, int prefetch_queue_depth = 2,
+                bool async_execution = true, size_t bytes_per_sample_hint = 0,
+                bool set_affinity = false, int max_num_stream = -1) {
               return std::unique_ptr<Pipeline>(
                   new Pipeline(batch_size, num_threads, device_id, seed, pipelined_execution,
-                      async_execution, bytes_per_sample_hint, set_affinity, max_num_stream));
+                      prefetch_queue_depth, async_execution, bytes_per_sample_hint, set_affinity,
+                      max_num_stream));
             }),
         "batch_size"_a,
         "num_threads"_a,
         "device_id"_a,
         "seed"_a,
         "exec_pipelined"_a,
+        "prefetch_queue_depth"_a = 2,
         "exec_async"_a,
         "bytes_per_sample_hint"_a = 0,
         "set_affinity"_a = false,
@@ -503,20 +575,22 @@ PYBIND11_MODULE(backend_impl, m) {
     .def(py::init(
           [](string serialized_pipe,
              int batch_size, int num_threads, int device_id,
-             bool pipelined_execution = true, bool async_execution = true,
-             size_t bytes_per_sample_hint = 0, bool set_affinity = false,
+             bool pipelined_execution = true,  int prefetch_queue_depth = 2,
+             bool async_execution = true, size_t bytes_per_sample_hint = 0,
+             bool set_affinity = false,
              int max_num_stream = -1) {
               return std::unique_ptr<Pipeline>(
                   new Pipeline(serialized_pipe,
                                batch_size, num_threads, device_id, pipelined_execution,
-                               async_execution, bytes_per_sample_hint, set_affinity,
-                               max_num_stream));
+                               prefetch_queue_depth, async_execution, bytes_per_sample_hint,
+                               set_affinity, max_num_stream));
             }),
         "serialized_pipe"_a,
         "batch_size"_a,
         "num_threads"_a,
         "device_id"_a,
         "exec_pipelined"_a,
+        "prefetch_queue_depth"_a = 2,
         "exec_async"_a,
         "bytes_per_sample_hint"_a = 0,
         "set_affinity"_a = false,
@@ -553,6 +627,25 @@ PYBIND11_MODULE(backend_impl, m) {
           }
           return list;
         }, py::return_value_policy::take_ownership)
+    .def("ShareOutputs",
+        [](Pipeline *p) {
+          DeviceWorkspace ws;
+          p->ShareOutputs(&ws);
+
+          py::list list;
+          for (int i = 0; i < ws.NumOutput(); ++i) {
+            if (ws.OutputIsType<CPUBackend>(i)) {
+              list.append(ws.Output<CPUBackend>(i));
+            } else {
+              list.append(ws.Output<GPUBackend>(i));
+            }
+          }
+          return list;
+        }, py::return_value_policy::take_ownership)
+    .def("ReleaseOutputs",
+        [](Pipeline *p) {
+          p->ReleaseOutputs();
+        })
     .def("batch_size", &Pipeline::batch_size)
     .def("num_threads", &Pipeline::num_threads)
     .def("device_id", &Pipeline::device_id)
@@ -633,7 +726,7 @@ PYBIND11_MODULE(backend_impl, m) {
     .def("copy", [](OpSpec &o) -> OpSpec * {
         OpSpec * ret = new OpSpec(o);
         return ret;
-        }, py::return_value_policy::reference);
+        }, py::return_value_policy::take_ownership);
 
   // Registries for cpu, gpu & mixed operators
   m.def("RegisteredCPUOps", &GetRegisteredCPUOps);
@@ -642,7 +735,7 @@ PYBIND11_MODULE(backend_impl, m) {
   m.def("RegisteredSupportOps", &GetRegisteredSupportOps);
 
   // Registry for OpSchema
-  m.def("GetSchema", &GetSchema);
+  m.def("GetSchema", &GetSchema, py::return_value_policy::reference);
 
   py::class_<OpSchema>(m, "OpSchema")
     .def("Dox", &OpSchema::Dox)
@@ -650,6 +743,7 @@ PYBIND11_MODULE(backend_impl, m) {
     .def("MinNumInput", &OpSchema::MinNumInput)
     .def("HasOutputFn", &OpSchema::HasOutputFn)
     .def("CalculateOutputs", &OpSchema::CalculateOutputs)
+    .def("CalculateAdditionalOutputs", &OpSchema::CalculateAdditionalOutputs)
     .def("SupportsInPlace", &OpSchema::SupportsInPlace)
     .def("CheckArgs", &OpSchema::CheckArgs)
     .def("GetArgumentDox", &OpSchema::GetArgumentDox)

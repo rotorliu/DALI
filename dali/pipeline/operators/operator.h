@@ -21,7 +21,6 @@
 #include "dali/common.h"
 #include "dali/error_handling.h"
 #include "dali/pipeline/workspace/device_workspace.h"
-#include "dali/pipeline/dali.pb.h"
 #include "dali/pipeline/data/backend.h"
 #include "dali/pipeline/operators/operator_factory.h"
 #include "dali/pipeline/operators/op_schema.h"
@@ -40,7 +39,7 @@ enum DALIOpType {
 
 template <typename InputType>
 inline void CheckInputLayout(const InputType& input, const OpSpec& spec) {
-  auto schema = SchemaRegistry::GetSchema(spec.name());
+  auto &schema = SchemaRegistry::GetSchema(spec.name());
   if (schema.EnforceInputLayout()) {
     DALI_ENFORCE(input.GetLayout() == schema.InputLayout());
   }
@@ -167,7 +166,7 @@ class Operator : public OperatorBase {
     OperatorBase(spec)
   {}
 
-  virtual inline ~Operator() noexcept(false)
+  inline ~Operator() noexcept(false) override
   {}
 
   using OperatorBase::Run;
@@ -176,6 +175,15 @@ class Operator : public OperatorBase {
     SetupSharedSampleParams(ws);
 
     for (int i = 0; i < input_sets_; ++i) {
+      if (std::is_same<Backend, GPUBackend>::value) {
+        // Before we start working on the next input set, we need
+        // to wait until the last one is finished. Otherwise for some ops
+        // we risk overwriting data used by the kernel called for previous
+        // image. Doing it for all ops is a compromise between performance
+        // (which should not be greatly affected) and robustness (guarding
+        // against this potential problem for newly added ops)
+        SyncHelper(i, ws);
+      }
       RunImpl(ws, i);
     }
   }
@@ -190,6 +198,20 @@ class Operator : public OperatorBase {
    * implemented by derived ops.
    */
   virtual void RunImpl(Workspace<Backend> *ws, int idx = 0) = 0;
+
+ private:
+  // SINFAE for Run is not possible as we want it to be virtual
+  template <typename B = Backend>
+  typename std::enable_if<std::is_same<B, GPUBackend>::value>::type
+  SyncHelper(int i, Workspace<B> *ws) {
+    if (i != 0) {
+        CUDA_CALL(cudaStreamSynchronize(ws->stream()));
+    }
+  }
+
+  template <typename B = Backend>
+  typename std::enable_if<!std::is_same<B, GPUBackend>::value>::type
+  SyncHelper(int /*unused*/, Workspace<B> */*unused*/) {}
 };
 
 template<>
@@ -199,7 +221,7 @@ class Operator<MixedBackend> : public OperatorBase {
     OperatorBase(spec)
   {}
 
-  virtual inline ~Operator() noexcept(false)
+  inline ~Operator() noexcept(false) override
   {}
 
   using OperatorBase::Run;
@@ -218,7 +240,7 @@ DALI_DECLARE_OPTYPE_REGISTRY(SupportOperator, OperatorBase);
   static int ANONYMIZE_VARIABLE(OpName) =                       \
     DALI_OPERATOR_SCHEMA_REQUIRED_FOR_##OpName();               \
   DALI_DEFINE_OPTYPE_REGISTERER(OpName, OpType,                 \
-      device##Operator, dali::OperatorBase)
+      device##Operator, ::dali::OperatorBase, #device)
 
 class ResizeParamDescr;
 

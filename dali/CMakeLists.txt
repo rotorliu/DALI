@@ -14,6 +14,7 @@
 
 # Set variables used by subdirectories
 set(DALI_SRCS)
+set(DALI_OPERATOR_SRCS)
 set(DALI_TEST_SRCS)
 set(DALI_BENCHMARK_SRCS)
 set(DALI_TF_SRCS)
@@ -22,12 +23,15 @@ set(DALI_TF_SRCS)
 # Build libdali
 ################################################
 add_subdirectory(image)
+add_subdirectory(kernels)
 add_subdirectory(pipeline)
 add_subdirectory(util)
 add_subdirectory(plugin)
 add_subdirectory(c_api)
+add_subdirectory(aux)
 
 set(dali_lib "dali")
+set(dali_operator_lib "dali_operators")
 
 # Collect source files for dali
 file(GLOB tmp *.cc)
@@ -44,15 +48,28 @@ endif()
 set(CUDA_LINK_LIBRARIES_KEYWORD PRIVATE)
 if(${CMAKE_VERSION} VERSION_LESS "3.9.0")
   # In cmake 3.8.0 or lower, CUDA_LINK_LIBRARIES_KEYWORD is not available
-  # So this is a workaround to append PRIVATE in front of it 
+  # So this is a workaround to append PRIVATE in front of it
   set(CUDA_LIBRARIES ${CUDA_LINK_LIBRARIES_KEYWORD} ${CUDA_LIBRARIES})
 endif()
+cuda_add_library(${dali_operator_lib} STATIC ${DALI_OPERATOR_SRCS})
+
 cuda_add_library(${dali_lib} SHARED ${DALI_SRCS} ${DALI_PROTO_OBJ})
+
+# Options for using Dockerfile FFmpeg version
+target_compile_definitions(${dali_lib} PRIVATE HAVE_AVSTREAM_CODECPAR=1)
+target_compile_definitions(${dali_lib} PRIVATE HAVE_AVBSFCONTEXT=1)
+
+target_compile_definitions(${dali_operator_lib} PRIVATE HAVE_AVSTREAM_CODECPAR=1)
+target_compile_definitions(${dali_operator_lib} PRIVATE HAVE_AVBSFCONTEXT=1)
 
 # Define symbol version script for libdali.so
 set(exports_map_path "${PROJECT_BINARY_DIR}/stage")
 set(dali_lib_exports "lib${dali_lib}.map")
 configure_file("${PROJECT_SOURCE_DIR}/cmake/${dali_lib_exports}.in" "${exports_map_path}/${dali_lib_exports}")
+target_link_libraries(${dali_lib} PRIVATE ${dali_operator_lib})
+# link whole content of dali_operator_lib into dali_lib
+target_link_libraries(${dali_lib} PRIVATE "-Wl,--whole-archive $<TARGET_LINKER_FILE:${dali_operator_lib}> -Wl,--no-whole-archive")
+
 target_link_libraries(${dali_lib} PRIVATE -Wl,--version-script=${exports_map_path}/${dali_lib_exports})
 add_custom_target(${dali_lib_exports} DEPENDS "${exports_map_path}/${dali_lib_exports}")
 add_dependencies(${dali_lib} ${dali_lib_exports})
@@ -66,23 +83,34 @@ target_link_libraries(${dali_lib} PRIVATE "-Wl,--exclude-libs,${exclude_libs}")
 message(STATUS "Adding dependencies to ${dali_lib}: '${DALI_LIBS}'")
 target_link_libraries(${dali_lib} PRIVATE ${DALI_LIBS})
 
-# install libdali to build dir
+# install libdali to the wheel dir
 set_target_properties(${dali_lib} PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+    LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/dali/python/nvidia/dali/
+)
+
+set_target_properties(${dali_operator_lib} PROPERTIES
+    ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
 )
 
 # filter all *.h which don't have 'test' in name, create pairs 'src dst' string with sed and call xargs
 # with install command to copy with dest recursive dir creation
+add_custom_target(install_headers ALL
+    DEPENDS ${dali_lib}
+)
+
 add_custom_command(
-    TARGET ${dali_lib} POST_BUILD
+    TARGET install_headers
     COMMAND find ${CMAKE_CURRENT_LIST_DIR} -regex ".*\\\\.h" | grep --invert test
-    | sed -r 's,\(^${CMAKE_CURRENT_LIST_DIR}\)\(.*\),\\1\\2 ${CMAKE_BINARY_DIR}/include/dali\\2,'
-    | xargs -n 2 install -D)
+    | sed -r 's,\(^${CMAKE_CURRENT_LIST_DIR}\)\(.*\),\\1\\2 ${PROJECT_BINARY_DIR}/dali/python/nvidia/dali/include/dali\\2,'
+    | xargs -n 2 install -D
+  )
 
 ################################################
 # Build test suite
 ################################################
 if (BUILD_TEST)
+  set(TEST_BINARY_DIR ${PROJECT_BINARY_DIR}/dali/python/nvidia/dali/test)
+
   # get all test srcs
   add_subdirectory(test)
 
@@ -97,7 +125,7 @@ if (BUILD_TEST)
   target_link_libraries(${test_main_bin} PRIVATE ${DALI_LIBS} ${dali_lib} gtest)
 
   set_target_properties(${test_main_bin} PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/dali/python/nvidia/dali/test)
+    RUNTIME_OUTPUT_DIRECTORY ${TEST_BINARY_DIR})
 endif()
 
 
@@ -127,27 +155,51 @@ endif()
 ################################################
 if (BUILD_TENSORFLOW)
 
-  execute_process(
-    COMMAND python -c "from __future__ import print_function; import sys; paths = sys.path; f = [p for p in paths if \"-packages\" in p] ; print(f[0], end=\"\")"
-    OUTPUT_VARIABLE DIST_PACKAGES_DIR)
-
   add_subdirectory(tensorflow)
 
-  set(customop_lib "dali_tf")
+  # get default TF installation path
+   execute_process(
+     COMMAND python -c "from __future__ import print_function; import sys; paths = sys.path; f = [p for p in paths if \"-packages\" in p] ; print(f[0], end=\"\")"
+     OUTPUT_VARIABLE DIST_PACKAGES_DIR)
 
-  cuda_add_library(${customop_lib} SHARED ${DALI_TF_SRCS})
+  set(TF_PATHS)
+  set(TF_VER)
+  # obtain custom versions of TF we want to build aganist
+  file(GLOB TF_VERSIONS RELATIVE /tensorflow /tensorflow/*)
+  foreach(VER ${TF_VERSIONS})
+    set(FULL_PATH /tensorflow/${VER})
+    if(IS_DIRECTORY ${FULL_PATH})
+      list(APPEND TF_PATHS ${FULL_PATH})
+      list(APPEND TF_VER "_${VER}")
+    ENDIF()
+  ENDFOREACH()
 
-  separate_arguments(TF_CFLAGS UNIX_COMMAND "-I${DIST_PACKAGES_DIR}/tensorflow/include -I${DIST_PACKAGES_DIR}/external/nsync/public -D_GLIBCXX_USE_CXX11_ABI=0")
-  target_compile_options(${customop_lib} PRIVATE ${TF_CFLAGS})
+  # append default TF version
+  list(APPEND TF_PATHS ${DIST_PACKAGES_DIR})
+  list(APPEND TF_VER ";")
 
-  message(STATUS "Adding dependencies to ${customop_lib}: '${dali_lib}'")
-  add_dependencies(${customop_lib} ${dali_lib})
+  # build TF plugin for each TF version we want to support
+  list(LENGTH TF_PATHS TF_LIST_L)
+  math(EXPR TF_LIST_L_ITER "${TF_LIST_L} - 1")
+  foreach(IDX RANGE ${TF_LIST_L_ITER})
+    list(GET TF_PATHS ${IDX} FULL_PATH)
+    list(GET TF_VER ${IDX} VER)
+    set(customop_lib "dali_tf${VER}")
 
-  target_link_libraries(${customop_lib} PRIVATE -L${DIST_PACKAGES_DIR}/tensorflow -ltensorflow_framework)
-  target_link_libraries(${customop_lib} PRIVATE ${dali_lib})
+    cuda_add_library(${customop_lib} SHARED ${DALI_TF_SRCS})
 
-  set_target_properties(${customop_lib} PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/dali/python/nvidia/dali/plugin")
+    separate_arguments(TF_CFLAGS UNIX_COMMAND "-I${FULL_PATH}/tensorflow/include -I${FULL_PATH}/external/nsync/public -D_GLIBCXX_USE_CXX11_ABI=0")
+    target_compile_options(${customop_lib} PRIVATE ${TF_CFLAGS})
+
+    message(STATUS "Adding dependencies to ${customop_lib}: '${dali_lib}'")
+    add_dependencies(${customop_lib} ${dali_lib})
+
+    target_link_libraries(${customop_lib} PRIVATE -L${FULL_PATH}/tensorflow -ltensorflow_framework)
+    target_link_libraries(${customop_lib} PRIVATE ${dali_lib})
+
+    set_target_properties(${customop_lib} PROPERTIES
+      LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/dali/python/nvidia/dali/plugin")
+  ENDFOREACH()
 endif()
 
 
@@ -158,4 +210,3 @@ if (BUILD_PYTHON)
   # Get all python srcs
   add_subdirectory(python)
 endif()
-

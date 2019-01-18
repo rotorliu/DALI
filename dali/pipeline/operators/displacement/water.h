@@ -53,11 +53,7 @@ class WaterAugment {
     const T newX = w + wX.ampl * sinf(wX.freq * h + wX.phase);
     const T newY = h + wY.ampl * cosf(wY.freq * w + wY.phase);
 
-    Point<T> p;
-    p.x = newX >= 0 && newX < W ? newX : -1;
-    p.y = newY >= 0 && newY < H ? newY : -1;
-
-    return p;
+    return CreatePointLimited(newX, newY, W, H);
   }
 
  private:
@@ -70,7 +66,7 @@ class Water : public DisplacementFilter<Backend, WaterAugment> {
   explicit Water(const OpSpec& spec)
     : DisplacementFilter<Backend, WaterAugment>(spec) {}
 
-  virtual ~Water() = default;
+  ~Water() override = default;
 };
 
 }  // namespace dali

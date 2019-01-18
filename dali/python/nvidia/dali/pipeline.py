@@ -15,7 +15,7 @@
 #pylint: disable=no-member
 from collections import deque
 from nvidia.dali import backend as b
-from nvidia.dali import tensor as nt
+from nvidia.dali import edge as Edge
 
 class Pipeline(object):
     """Pipeline class encapsulates all data required to define and run
@@ -61,16 +61,21 @@ class Pipeline(object):
                     Value of -1 does not impose a limit.
                     This parameter is currently unused (and behavior of
                     unrestricted number of streams is assumed).
+    `prefetch_queue_depth`: int, optional, default = 2
+                            Depth of the executor pipeline. Deeper pipeline makes DALI
+                            more resistant to uneven execution time of each batch, but it
+                            also consumes more memory for internal buffers.
     """
     def __init__(self, batch_size = -1, num_threads = -1, device_id = -1, seed = -1,
-                 exec_pipelined=True, exec_async=True,
-                 bytes_per_sample=0, set_affinity=False,
-                 max_streams=-1):
+                 exec_pipelined=True, prefetch_queue_depth=2,
+                 exec_async=True, bytes_per_sample=0,
+                 set_affinity=False, max_streams=-1):
         self._batch_size = batch_size
         self._num_threads = num_threads
         self._device_id = device_id
         self._seed = seed
         self._exec_pipelined = exec_pipelined
+        self._prefetch_queue_depth = prefetch_queue_depth
         self._built = False
         self._first_iter = True
         self._prepared = False
@@ -110,7 +115,7 @@ class Pipeline(object):
         """
 
         if not self._built:
-            raise RuntimeError("Pipeline must be builti first.")
+            raise RuntimeError("Pipeline must be built first.")
         if name is not None:
             return self._pipe.epoch_size(name)
         return self._pipe.epoch_size()
@@ -121,6 +126,7 @@ class Pipeline(object):
                                 self._device_id,
                                 self._seed,
                                 self._exec_pipelined,
+                                self._prefetch_queue_depth,
                                 self._exec_async,
                                 self._bytes_per_sample,
                                 self._set_affinity,
@@ -131,25 +137,25 @@ class Pipeline(object):
             outputs = (outputs,)
 
         for output in outputs:
-            if not isinstance(output, nt.TensorReference):
+            if not isinstance(output, Edge.EdgeReference):
                 raise TypeError(
-                    "Expected outputs of type "
-                    "TensorReference. Received "
-                    "output type {}"
+                    ("Expected outputs of type "
+                    "EdgeReference. Received "
+                    "output type {}")
                     .format(type(output).__name__)
                 )
 
         # Backtrack to construct the graph
         op_ids = set()
-        tensors = deque(outputs)
+        edges = deque(outputs)
         ops = []
-        while tensors:
-            current_tensor = tensors.popleft()
-            source_op = current_tensor.source
+        while edges:
+            current_edge = edges.popleft()
+            source_op = current_edge.source
             if source_op is None:
                 raise RuntimeError(
                     "Pipeline encountered "
-                    "Tensor with no source op.")
+                    "Edge with no source op.")
 
             # To make sure we don't double count ops in
             # the case that they produce more than one
@@ -167,19 +173,19 @@ class Pipeline(object):
                 # when adding to the backend pipeline
                 ops.remove(source_op)
                 ops.append(source_op)
-            for tensor in source_op.inputs:
-                if isinstance(tensor, list):
-                    for t in tensor:
-                        tensors.append(t)
+            for edge in source_op.inputs:
+                if isinstance(edge, list):
+                    for e in edge:
+                        edges.append(e)
                 else:
-                    tensors.append(tensor)
+                    edges.append(edge)
 
         # Add the ops to the graph and build the backend
         while ops:
             op = ops.pop()
             self._pipe.AddOperator(op.spec, op.name)
         self._prepared = True
-        self._names_and_devices = [(t.name, t.device) for t in outputs]
+        self._names_and_devices = [(e.name, e.device) for e in outputs]
 
     def build(self):
         """Build the pipeline.
@@ -201,20 +207,20 @@ class Pipeline(object):
         operator."""
         if not self._built:
             raise RuntimeError("Pipeline must be built first.")
-        if not isinstance(ref, nt.TensorReference):
+        if not isinstance(ref, Edge.EdgeReference):
             raise TypeError(
-                "Expected argument one to "
-                "be TensorReference. "
-                "Received output type {}"
+                ("Expected argument one to "
+                "be EdgeReference. "
+                "Received output type {}")
                 .format(type(ref).__name__)
             )
         if isinstance(data, list):
             inputs = []
             for datum in data:
-                inputs.append(nt.TensorCPU(datum))
+                inputs.append(Edge.TensorCPU(datum))
             self._pipe.SetExternalTensorInput(ref.name, inputs)
         else:
-            inp = nt.TensorListCPU(data)
+            inp = Edge.TensorListCPU(data)
             self._pipe.SetExternalTLInput(ref.name, inp)
 
     def _run_cpu(self):
@@ -230,13 +236,30 @@ class Pipeline(object):
         self._pipe.RunGPU()
 
     def outputs(self):
-        """Returns the outputs of the pipeline.
+        """Returns the outputs of the pipeline and releases previous buffer.
 
         If the pipeline is executed asynchronously, this function blocks
         until the results become available."""
+        self._release_outputs()
+        return self._share_outputs()
+
+    def _share_outputs(self):
+        """Returns the outputs of the pipeline.
+
+        Main difference to outputs is that _share_outputs doesn't release
+        returned buffers, _release_outputs need to be called for that.
+        If the pipeline is executed asynchronously, this function blocks
+        until the results become available."""
+        return self._pipe.ShareOutputs()
+
+    def _release_outputs(self):
+        """Release buffers returned by _share_outputs calls.
+
+        It helps in case when output call result is consumed (copied)
+        and buffers can be set free before next _share_outputs call"""
         if not self._built:
             raise RuntimeError("Pipeline must be built first.")
-        return self._pipe.Outputs()
+        return self._pipe.ReleaseOutputs()
 
     def run(self):
         """Run the pipeline and return the result.
@@ -244,21 +267,26 @@ class Pipeline(object):
         If the pipeline was created with `exec_async` option set to `True`,
         this function will also start prefetching the next iteration for
         faster execution."""
-        self._start_run()
+        if self._first_iter and self._exec_pipelined:
+            self._prefetch()
+        else:
+            self._start_run()
         return self.outputs()
+
+    def _prefetch(self):
+        """Executes pipeline to fill executor's pipeline."""
+        if not self._built:
+            raise RuntimeError("Pipeline must be built first.")
+        if self._first_iter and self._exec_pipelined:
+            self._first_iter = False
+            for i in range(self._prefetch_queue_depth):
+                self._start_run()
 
     def _start_run(self):
         """Start running the pipeline without waiting for its results.
 
         If the pipeline was created with `exec_async` option set to `True`,
         this function will return without waiting for the execution to end."""
-        if not self._built:
-            raise RuntimeError("Pipeline must be built first.")
-        if self._first_iter and self._exec_pipelined:
-            self.iter_setup()
-            self._run_cpu()
-            self._run_gpu()
-            self._first_iter = False
         self.iter_setup()
         self._run_cpu()
         self._run_gpu()
@@ -283,6 +311,7 @@ class Pipeline(object):
                                 self._num_threads,
                                 self._device_id,
                                 self._exec_pipelined,
+                                self._prefetch_queue_depth,
                                 self._exec_async,
                                 self._bytes_per_sample,
                                 self._set_affinity,
@@ -307,7 +336,7 @@ class Pipeline(object):
         """This function is defined by the user to construct the
         graph of operations for their pipeline.
 
-        It returns a list of output `TensorReference`."""
+        It returns a list of output `EdgeReference`."""
         raise NotImplementedError
 
     def iter_setup(self):

@@ -15,6 +15,7 @@
 #ifndef DALI_PIPELINE_OPERATORS_RESIZE_RESIZE_H_
 #define DALI_PIPELINE_OPERATORS_RESIZE_RESIZE_H_
 
+#include <nppdefs.h>
 #include <random>
 #include <utility>
 #include <vector>
@@ -39,8 +40,9 @@ typedef NppiPoint MirroringInfo;
 
 class ResizeParamDescr {
  public:
-  ResizeParamDescr(ResizeAttr *pntr, NppiPoint *pOutResize = NULL, MirroringInfo *pMirror = NULL,
-                        size_t pTotalSize[] = NULL, size_t batchSliceNumb = 0) :
+  explicit ResizeParamDescr(ResizeAttr *pntr, NppiPoint *pOutResize = nullptr,
+                   MirroringInfo *pMirror = nullptr, size_t pTotalSize[] = nullptr,
+                   size_t batchSliceNumb = 0) :
                         pResize_(pntr), pResizeParam_(pOutResize), pMirroring_(pMirror),
                         pTotalSize_(pTotalSize), nBatchSlice_(batchSliceNumb) {}
   ResizeAttr *pResize_;
@@ -52,12 +54,10 @@ class ResizeParamDescr {
 
 class ResizeAttr : protected ResizeCropMirrorAttr {
  public:
-  explicit inline ResizeAttr(const OpSpec &spec) : ResizeCropMirrorAttr(spec),
-            color_(IsColor(image_type_)), C_(color_ ? 3 : 1) {
-  }
+  explicit inline ResizeAttr(const OpSpec &spec) : ResizeCropMirrorAttr(spec) {}
 
   void SetSize(DALISize *in_size, const vector<Index> &shape, int idx,
-               DALISize *out_size, TransformMeta const * meta = NULL) const;
+               DALISize *out_size, TransformMeta const * meta = nullptr) const;
 
   inline vector<DALISize> &sizes(io_type type)            { return sizes_[type]; }
   inline DALISize *size(io_type type, size_t idx)         { return sizes(type).data() + idx; }
@@ -68,14 +68,10 @@ class ResizeAttr : protected ResizeCropMirrorAttr {
   }
 
  protected:
-  virtual uint ResizeInfoNeeded() const                   { return 0; }
+  uint ResizeInfoNeeded() const override                  { return 0; }
 
   inline vector<const uint8*> *inputImages()              { return &input_ptrs_; }
   inline vector<uint8 *> *outputImages()                  { return &output_ptrs_; }
-
-  // Input/output channels meta-data
-  bool color_;
-  int C_;
 
   // store per-thread data for same resize on multiple data
   std::vector<TransformMeta> per_sample_meta_;
@@ -89,30 +85,17 @@ class ResizeAttr : protected ResizeCropMirrorAttr {
 template <typename Backend>
 class Resize : public Operator<Backend>, protected ResizeAttr {
  public:
-  explicit inline Resize(const OpSpec &spec) :
-    Operator<Backend>(spec), ResizeAttr(spec) {
-      resizeParam_.resize(batch_size_ * 2);
-      // Resize per-image data
-      input_ptrs_.resize(batch_size_);
-      output_ptrs_.resize(batch_size_);
-      sizes_[0].resize(batch_size_);
-      sizes_[1].resize(batch_size_);
-
-      // Per set-of-sample TransformMeta
-      per_sample_meta_.resize(batch_size_);
-  }
-
-  virtual inline ~Resize() = default;
+  explicit Resize(const OpSpec &spec);
+  inline ~Resize() override    { delete resizeParam_; }
 
  protected:
-  void RunImpl(Workspace<Backend> *ws, const int idx) override;
-
+  void RunImpl(Workspace<Backend> *ws, int idx) override;
   void SetupSharedSampleParams(Workspace<Backend> *ws) override;
 
-  inline void DataDependentSetup(Workspace<Backend> *ws, const int idx);
-
-  vector<NppiPoint> resizeParam_;
+  vector<NppiPoint> *resizeParam_ = nullptr;
   USE_OPERATOR_MEMBERS();
+  bool save_attrs_;
+  int outputs_per_idx_;
 };
 
 }  // namespace dali

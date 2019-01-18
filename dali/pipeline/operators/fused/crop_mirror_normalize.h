@@ -37,7 +37,7 @@ class CropMirrorNormalize : public Operator<Backend> {
     image_type_(spec.GetArgument<DALIImageType>("image_type")),
     color_(IsColor(image_type_)),
     C_(color_ ? 3 : 1) {
-    vector<int> temp_crop;
+    vector<float> temp_crop;
     GetSingleOrRepeatedArg(spec, &temp_crop, "crop", 2);
 
     crop_h_ = temp_crop[0];
@@ -51,11 +51,6 @@ class CropMirrorNormalize : public Operator<Backend> {
       }
     }
 
-    // Validate input parameters
-    DALI_ENFORCE(output_layout_ == DALI_NCHW ||
-                 output_layout_ == DALI_NHWC,
-                 "Unsupported output layout."
-                 "Expected NCHW or NHWC.");
     DALI_ENFORCE(crop_h_ > 0 && crop_w_ > 0);
 
     GetSingleOrRepeatedArg(spec, &mean_vec_, "mean", C_);
@@ -79,7 +74,7 @@ class CropMirrorNormalize : public Operator<Backend> {
     per_sample_dimensions_.resize(batch_size_);
   }
 
-  virtual inline ~CropMirrorNormalize() = default;
+  inline ~CropMirrorNormalize() override = default;
 
  protected:
   void RunImpl(Workspace<Backend> *ws, const int idx) override;
@@ -93,6 +88,14 @@ class CropMirrorNormalize : public Operator<Backend> {
 
   template <typename OUT>
   void ValidateHelper(TensorList<Backend> *output);
+
+  inline Dims GetOutShape(DALITensorLayout inputLayout, DALITensorLayout *pOutLayout) {
+    *pOutLayout = output_layout_ == DALI_SAME ? inputLayout : output_layout_;
+    if (*pOutLayout == DALI_NCHW)
+      return {C_, crop_h_, crop_w_};
+    else
+      return {crop_h_, crop_w_, C_};
+  }
 
   // Output data type
   DALIDataType output_type_;

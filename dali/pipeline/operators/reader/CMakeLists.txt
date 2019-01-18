@@ -14,8 +14,12 @@
 
 add_subdirectory(loader)
 add_subdirectory(parser)
+add_subdirectory(nvdecoder)
 
 list(APPEND DALI_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/file_reader_op.cc")
+list(APPEND DALI_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/sequence_reader_op.cc")
+
+list(APPEND DALI_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/video_reader_op.cc")
 
 if (BUILD_LMDB)
   list(APPEND DALI_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/caffe_reader_op.cc")
@@ -28,6 +32,8 @@ if (BUILD_PROTO3)
 endif()
 
 list(APPEND DALI_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/mxnet_reader_op.cc")
+
+list(APPEND DALI_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/coco_reader_op.cc")
 
 set(DALI_SRCS ${DALI_SRCS} PARENT_SCOPE)
 

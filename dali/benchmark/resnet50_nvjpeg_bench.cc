@@ -36,7 +36,7 @@ BENCHMARK_DEFINE_F(RealRN50, nvjpegPipe)(benchmark::State& st) { // NOLINT
   Pipeline pipe(
       batch_size,
       num_thread,
-      0, -1, pipelined,
+      0, -1, pipelined, 2,
       async);
 
   pipe.AddOperator(
@@ -76,7 +76,7 @@ BENCHMARK_DEFINE_F(RealRN50, nvjpegPipe)(benchmark::State& st) { // NOLINT
       .AddArg("device", "gpu")
       .AddArg("output_type", DALI_FLOAT16)
       .AddArg("random_crop", true)
-      .AddArg("crop", vector<int>{224, 224})
+      .AddArg("crop", vector<float>{224, 224})
       .AddArg("mirror_prob", 0.5f)
       .AddArg("image_type", img_type)
       .AddArg("mean", vector<float>{128, 128, 128})
@@ -112,7 +112,9 @@ BENCHMARK_DEFINE_F(RealRN50, nvjpegPipe)(benchmark::State& st) { // NOLINT
     }
   }
 
-  WriteHWCBatch<uint8_t>(*ws.Output<GPUBackend>(0), 0, 1, "img");
+#if DALI_DEBUG
+  WriteHWCBatch(*ws.Output<GPUBackend>(0), "img");
+#endif
   int num_batches = st.iterations() + static_cast<int>(pipelined);
   st.counters["FPS"] = benchmark::Counter(batch_size*num_batches,
       benchmark::Counter::kIsRate);

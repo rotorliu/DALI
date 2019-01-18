@@ -30,10 +30,10 @@
 
 namespace dali {
 
-class DummyLoader : public Loader<CPUBackend> {
+class DummyLoader : public Loader<CPUBackend, Tensor<CPUBackend>> {
  public:
   explicit DummyLoader(const OpSpec& spec) :
-    Loader<CPUBackend>(spec) {}
+    Loader<CPUBackend, Tensor<CPUBackend>>(spec) {}
 
   void ReadSample(Tensor<CPUBackend> *t) override {
     t->Resize({1});
@@ -45,16 +45,16 @@ class DummyLoader : public Loader<CPUBackend> {
     return 1;
   }
 };
-class DummyDataReader : public DataReader<CPUBackend> {
+class DummyDataReader : public DataReader<CPUBackend, Tensor<CPUBackend>> {
  public:
   explicit DummyDataReader(const OpSpec &spec)
-      : DataReader<CPUBackend>(spec),
+      : DataReader<CPUBackend, Tensor<CPUBackend>>(spec),
         count_(0) {
     loader_.reset(new DummyLoader(spec));
   }
 
-  ~DummyDataReader() {
-    DataReader<CPUBackend>::StopPrefetchThread();
+  ~DummyDataReader() override {
+    DataReader<CPUBackend, Tensor<CPUBackend>>::StopPrefetchThread();
   }
   /*
   using DataReader<CPUBackend>::prefetched_batch_;
@@ -114,6 +114,52 @@ TYPED_TEST(ReaderTest, SimpleTest) {
     pipe.RunCPU();
     pipe.RunGPU();
     pipe.Outputs(&ws);
+  }
+
+  return;
+}
+
+
+TYPED_TEST(ReaderTest, SequenceTest) {
+  Pipeline pipe(128, 4, 0);
+
+  pipe.AddOperator(
+      OpSpec("SequenceReader")
+      .AddArg("file_root", image_folder + "/frames/")
+      .AddArg("sequence_length", 3)
+      .AddArg("image_type", DALI_RGB)
+      .AddOutput("seq_out", "cpu"));
+
+  std::vector<std::pair<string, string>> outputs = {{"seq_out", "cpu"}};
+  pipe.Build(outputs);
+
+  DeviceWorkspace ws;
+  for (int i = 0; i < 4; ++i) {
+    printf(" ======= ITER %d ======\n", i);
+    pipe.RunCPU();
+    pipe.RunGPU();
+    pipe.Outputs(&ws);
+    auto shape = ws.Output<CPUBackend>(0)->AsTensor()->shape();
+    // We have NFHWC format
+    const auto batch_size = shape[0];
+    const auto frame_count = shape[1];
+    const auto H = shape[2];
+    const auto W = shape[3];
+    const auto C = shape[4];
+    const auto frame_size = H * W * C;
+    const auto seq_size = frame_size * frame_count;
+    for (int sample = 0; sample < batch_size; sample++) {
+      // We read samples sequentially. We have 2 "videos" of 16 frames,
+      // as sequence do not cross the boundary of one video, the highest starting frame is
+      // 13 (counting from 0, the last 3-element sequence is [13, 14, 15]).
+      auto start_frame = (i * batch_size + sample) % (16 - 3 + 1);
+      for (int frame = 0; frame < frame_count; frame++) {
+        auto off = sample * seq_size + frame * frame_size;
+        auto val = ws.Output<CPUBackend>(0)->AsTensor()->data<uint8_t>()[off];
+        decltype(val) expected = start_frame + frame;
+        ASSERT_EQ(val, expected);
+      }
+    }
   }
 
   return;

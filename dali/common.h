@@ -15,16 +15,12 @@
 #ifndef DALI_COMMON_H_
 #define DALI_COMMON_H_
 
-#include <cuda_runtime_api.h>  // for __align__ & CUDART_VERSION
-#include <cuda_fp16.h>  // for __half & related methods
-#include <cuda_profiler_api.h>
-
 #ifdef DALI_USE_NVTX
 #include "nvToolsExt.h"
 #endif
 
-#include <cstdint>
 #include <array>
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -36,7 +32,7 @@ namespace dali {
 
 // pi
 #ifndef M_PI
-const float M_PI =  3.14159265358979323846;
+const float M_PI = 3.14159265358979323846;
 #endif
 
 // Using declaration for common types
@@ -48,20 +44,21 @@ using std::string;
 using std::unique_ptr;
 using std::vector;
 
-
 // Common types
-typedef uint8_t uint8;
-typedef int16_t int16;
-typedef int64_t int64;
-typedef uint64_t uint64;
-typedef int32_t int32;
-typedef uint32_t uint32_t;
+using uint8 = uint8_t;
+using int16 = int16_t;
+using int64 = int64_t;
+using uint64 = uint64_t;
+using int32 = int32_t;
+using uint32 = uint32_t;
 
 // Basic data type for our indices and dimension sizes
 typedef int64_t Index;
 
-// Only supported on the GPU
-typedef __half float16;
+struct DALISize {
+    int width;
+    int height;
+};
 
 /**
  * @brief Supported interpolation types
@@ -76,43 +73,36 @@ enum DALIInterpType {
  * @brief Supported image formats
  */
 enum DALIImageType {
-  DALI_RGB = 0,
-  DALI_BGR = 1,
-  DALI_GRAY = 2
+  DALI_RGB   = 0,
+  DALI_BGR   = 1,
+  DALI_GRAY  = 2,
+  DALI_YCbCr = 3
 };
 
 /**
  * @brief Supported tensor layouts
  */
 enum DALITensorLayout {
-  DALI_NCHW = 0,
-  DALI_NHWC = 1,
-  DALI_SAME = 2
+  DALI_UNKNOWN = -1,
+  DALI_NCHW  = 0,
+  DALI_NHWC  = 1,
+  DALI_NFHWC = 2,
+  DALI_SAME  = 3
 };
 
 inline bool IsColor(DALIImageType type) {
-  if ((type == DALI_RGB) || (type == DALI_BGR)) {
-    return true;
-  }
-  return false;
+  return type == DALI_RGB || type == DALI_BGR || type == DALI_YCbCr;
 }
 
-// Compatible wrapper for CUDA 8 which does not have builtin static_cast<float16>
-template<typename dst>
-__device__ inline dst StaticCastGpu(float val)
-{ return static_cast<dst>(val); }
-
-#if defined(__CUDACC__) && defined(CUDART_VERSION) && CUDART_VERSION < 9000
-template<>
-__device__ inline float16 StaticCastGpu(float val)
-{ return __float2half(static_cast<float>(val)); }
-#endif  // defined(CUDART_VERSION) && CUDART_VERSION < 9000
+inline std::size_t NumberOfChannels(DALIImageType type) {
+  return IsColor(type) ? 3 : 1;
+}
 
 // Helper to delete copy constructor & copy-assignment operator
-#define DISABLE_COPY_MOVE_ASSIGN(name)          \
-  name(const name&) = delete;                   \
-  name& operator=(const name&) = delete;        \
-  name(name&&) = delete;                        \
+#define DISABLE_COPY_MOVE_ASSIGN(name)   \
+  name(const name&) = delete;            \
+  name& operator=(const name&) = delete; \
+  name(name&&) = delete;                 \
   name& operator=(name&&) = delete
 
 // Util to declare anonymous variable
@@ -120,31 +110,22 @@ __device__ inline float16 StaticCastGpu(float val)
 #define CONCAT_2(var1, var2) CONCAT_1(var1, var2)
 #define ANONYMIZE_VARIABLE(name) CONCAT_2(name, __LINE__)
 
-// Starts profiling DALI
-inline void DALIProfilerStart() {
-  cudaProfilerStart();
-}
-
-inline void DALIProfilerStop() {
-  cudaProfilerStop();
-}
-
 // Basic timerange for profiling
 struct TimeRange {
-  static const uint32_t kRed     = 0xFF0000;
-  static const uint32_t kGreen   = 0x00FF00;
-  static const uint32_t kBlue    = 0x0000FF;
-  static const uint32_t kYellow  = 0xB58900;
-  static const uint32_t kOrange  = 0xCB4B16;
-  static const uint32_t kRed1    = 0xDC322F;
+  static const uint32_t kRed = 0xFF0000;
+  static const uint32_t kGreen = 0x00FF00;
+  static const uint32_t kBlue = 0x0000FF;
+  static const uint32_t kYellow = 0xB58900;
+  static const uint32_t kOrange = 0xCB4B16;
+  static const uint32_t kRed1 = 0xDC322F;
   static const uint32_t kMagenta = 0xD33682;
-  static const uint32_t kViolet  = 0x6C71C4;
-  static const uint32_t kBlue1   = 0x268BD2;
-  static const uint32_t kCyan    = 0x2AA198;
-  static const uint32_t kGreen1  = 0x859900;
+  static const uint32_t kViolet = 0x6C71C4;
+  static const uint32_t kBlue1 = 0x268BD2;
+  static const uint32_t kCyan = 0x2AA198;
+  static const uint32_t kGreen1 = 0x859900;
   static const uint32_t knvGreen = 0x76B900;
 
-  TimeRange(std::string name, const uint32_t rgb = kBlue) { // NOLINT
+  TimeRange(std::string name, const uint32_t rgb = kBlue) {  // NOLINT
 #ifdef DALI_USE_NVTX
     nvtxEventAttributes_t att;
     att.version = NVTX_VERSION;
@@ -160,9 +141,7 @@ struct TimeRange {
 #endif
   }
 
-  ~TimeRange() {
-    stop();
-  }
+  ~TimeRange() { stop(); }
 
   void stop() {
 #ifdef DALI_USE_NVTX
@@ -176,7 +155,7 @@ struct TimeRange {
 #ifdef DALI_USE_NVTX
 
  private:
-    bool started = false;
+  bool started = false;
 #endif
 };
 
@@ -211,6 +190,8 @@ inline std::string to_string(const DALIImageType& im_type) {
       return "BGR";
     case DALI_GRAY:
       return "GRAY";
+    case DALI_YCbCr:
+      return "YCbCr";
     default:
       return "<unknown>";
   }
@@ -222,24 +203,26 @@ inline std::string to_string(const DALITensorLayout& layout) {
       return "NCHW";
     case DALI_NHWC:
       return "NHWC";
+    case DALI_NFHWC:
+      return "NFHWC";
+    case DALI_SAME:
+      return "SAME";
     default:
       return "<unknown>";
   }
 }
 
-template<typename T>
-auto to_string(const T& v)
-  -> decltype(std::string(v)) {
-    return v;
+template <typename T>
+auto to_string(const T& v) -> decltype(std::string(v)) {
+  return v;
 }
 
-template<typename T>
-auto to_string(const T& t)
-  -> decltype(t.ToString()) {
+template <typename T>
+auto to_string(const T& t) -> decltype(t.ToString()) {
   return t.ToString();
 }
 
-template<typename T>
+template <typename T>
 std::string to_string(const std::vector<T>& v) {
   std::string ret = "[";
   for (T t : v) {
@@ -251,17 +234,21 @@ std::string to_string(const std::vector<T>& v) {
 }
 
 template <typename T>
-struct is_vector: std::false_type {};
+struct is_vector : std::false_type {};
 
 template <typename T, typename A>
-struct is_vector<std::vector<T, A> >: std::true_type {};
+struct is_vector<std::vector<T, A> > : std::true_type {};
 
 template <typename T>
-struct is_array: std::false_type {};
+struct is_std_array : std::false_type {};
 
 template <typename T, size_t A>
-struct is_array<std::array<T, A> >: std::true_type {};
+struct is_std_array<std::array<T, A> > : std::true_type {};
 
 }  // namespace dali
+
+#define LOG_LINE \
+  if (0) \
+  std::cout << __FILE__ << ":" << __LINE__ << ": "
 
 #endif  // DALI_COMMON_H_

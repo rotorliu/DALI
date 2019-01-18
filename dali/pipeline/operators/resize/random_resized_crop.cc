@@ -59,7 +59,7 @@ struct RandomResizedCrop<CPUBackend>::Params {
 template<>
 void RandomResizedCrop<CPUBackend>::InitParams(const OpSpec &spec) {
   params_->rand_gens.resize(batch_size_);
-  std::seed_seq seq{spec.GetArgument<int>("seed")};
+  std::seed_seq seq{spec.GetArgument<int64_t>("seed")};
   std::vector<int> seeds(batch_size_);
   seq.generate(seeds.begin(), seeds.end());
   for (size_t i = 0; i < seeds.size(); ++i) {
@@ -82,8 +82,8 @@ void RandomResizedCrop<CPUBackend>::InitParams(const OpSpec &spec) {
 template<>
 void RandomResizedCrop<CPUBackend>::RunImpl(SampleWorkspace * ws, const int idx) {
   auto &input = ws->Input<CPUBackend>(idx);
-  DALI_ENFORCE(IsType<uint8>(input.type()),
-      "Expected input data as uint8.");
+  DALI_ENFORCE(input.ndim() == 3, "Operator expects 3-dimensional image input.");
+  DALI_ENFORCE(IsType<uint8>(input.type()), "Expected input data as uint8.");
 
   const int W = input.shape()[1];
   const int C = input.shape()[2];

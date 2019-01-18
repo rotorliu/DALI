@@ -85,13 +85,30 @@ DALIError_t BatchedResize(const uint8 **in_batch, int N, int C, const DALISize *
     const NppiRect out_roi = {0, 0, out_size.width, out_size.height};
 #endif
 
-    DALI_CHECK_NPP((*func)(in_batch[i], in_size.width*C, in_size, in_roi,
-                           out_batch[i], out_size.width*C, out_size, out_roi, npp_type));
+    DALI_CHECK_NPP((*func)(
+      in_batch[i], in_size.width*C, ToNppiSize(in_size), in_roi,
+      out_batch[i], out_size.width*C, ToNppiSize(out_size), out_roi, npp_type));
   }
   return DALISuccess;
 }
 
 }  // namespace
+
+template<>
+Resize<GPUBackend>::Resize(const OpSpec &spec) : Operator<GPUBackend>(spec), ResizeAttr(spec) {
+  save_attrs_ = spec_.HasArgument("save_attrs");
+  outputs_per_idx_ = save_attrs_ ? 2 : 1;
+
+  resizeParam_ = new  vector<NppiPoint>(batch_size_ * 2);
+  // Resize per-image data
+  input_ptrs_.resize(batch_size_);
+  output_ptrs_.resize(batch_size_);
+  sizes_[0].resize(batch_size_);
+  sizes_[1].resize(batch_size_);
+
+  // Per set-of-sample TransformMeta
+  per_sample_meta_.resize(batch_size_);
+}
 
 template<>
 void Resize<GPUBackend>::SetupSharedSampleParams(DeviceWorkspace* ws) {
@@ -108,18 +125,11 @@ void Resize<GPUBackend>::SetupSharedSampleParams(DeviceWorkspace* ws) {
 
 template<>
 void Resize<GPUBackend>::RunImpl(DeviceWorkspace *ws, const int idx) {
-    // Before we start working on the next input set, we need
-    // to wait until the last one is finished. Otherwise we risk
-    // overwriting data used by the kernel called for previous image
-    if (idx != 0)
-      CUDA_CALL(cudaStreamSynchronize(ws->stream()));
     const auto &input = ws->Input<GPUBackend>(idx);
-    const bool save_attrs = spec_.HasArgument("save_attrs");
-    const int outputs_per_idx = save_attrs ? 2 : 1;
 
-    auto output = ws->Output<GPUBackend>(outputs_per_idx * idx);
+    auto output = ws->Output<GPUBackend>(outputs_per_idx_ * idx);
 
-    ResizeParamDescr resizeDescr(this, resizeParam_.data());
+    ResizeParamDescr resizeDescr(this, resizeParam_->data());
     DataDependentSetupGPU(input, output, batch_size_, false,
                             inputImages(), outputImages(), NULL, &resizeDescr);
 
@@ -130,26 +140,26 @@ void Resize<GPUBackend>::RunImpl(DeviceWorkspace *ws, const int idx) {
         (const uint8**)input_ptrs_.data(),
         batch_size_, C_, sizes(input_t).data(),
         output_ptrs_.data(), sizes(output_t).data(),
-        resizeParam_.data(), interp_type_);
+        resizeParam_->data(), getInterpType());
     nppSetStream(old_stream);
 
     // Setup and output the resize attributes if necessary
-    if (save_attrs) {
-      auto *attr_output = ws->Output<CPUBackend>(outputs_per_idx * idx + 1);
-
+    if (save_attrs_) {
+      TensorList<CPUBackend> attr_output_cpu;
       vector<Dims> resize_shape(input.ntensor());
 
-      for (int i = 0; i < input.ntensor(); ++i) {
+      for (size_t i = 0; i < input.ntensor(); ++i) {
         resize_shape[i] = Dims{2};
       }
 
-      attr_output->Resize(resize_shape);
+      attr_output_cpu.Resize(resize_shape);
 
-      for (int i = 0; i < input.ntensor(); ++i) {
-        int *t = attr_output->mutable_tensor<int>(i);
-        t[0] = sizes(output_t).data()[i].height;
-        t[1] = sizes(output_t).data()[i].width;
+      for (size_t i = 0; i < input.ntensor(); ++i) {
+        int *t = attr_output_cpu.mutable_tensor<int>(i);
+        t[0] = sizes(input_t).data()[i].height;
+        t[1] = sizes(input_t).data()[i].width;
       }
+      ws->Output<GPUBackend>(outputs_per_idx_ * idx + 1)->Copy(attr_output_cpu, ws->stream());
     }
 }
 

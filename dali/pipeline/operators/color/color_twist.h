@@ -174,7 +174,7 @@ class ColorTwistBase : public Operator<Backend> {
     DALI_ENFORCE(C_ == 3, "Color transformation is implemented only for RGB images");
   }
 
-  virtual ~ColorTwistBase() {
+  ~ColorTwistBase() override {
     for (auto * a : augments_) {
       delete a;
     }
@@ -209,7 +209,7 @@ class BrightnessAdjust : public ColorTwistBase<Backend> {
     this->augments_.push_back(new Brightness());
   }
 
-  virtual ~BrightnessAdjust() = default;
+  ~BrightnessAdjust() override = default;
 };
 
 template <typename Backend>
@@ -219,7 +219,7 @@ class ContrastAdjust : public ColorTwistBase<Backend> {
     this->augments_.push_back(new Contrast());
   }
 
-  virtual ~ContrastAdjust() = default;
+  ~ContrastAdjust() override = default;
 };
 
 template<typename Backend>
@@ -229,7 +229,7 @@ class HueAdjust : public ColorTwistBase<Backend> {
     this->augments_.push_back(new Hue());
   }
 
-  virtual ~HueAdjust() = default;
+  ~HueAdjust() override = default;
 };
 
 template<typename Backend>
@@ -239,7 +239,20 @@ class SaturationAdjust : public ColorTwistBase<Backend> {
     this->augments_.push_back(new Saturation());
   }
 
-  virtual ~SaturationAdjust() = default;
+  ~SaturationAdjust() override = default;
+};
+
+template<typename Backend>
+class ColorTwistAdjust : public ColorTwistBase<Backend> {
+ public:
+  inline explicit ColorTwistAdjust(const OpSpec &spec) : ColorTwistBase<Backend>(spec) {
+    this->augments_.push_back(new Hue());
+    this->augments_.push_back(new Saturation());
+    this->augments_.push_back(new Contrast());
+    this->augments_.push_back(new Brightness());
+  }
+
+  ~ColorTwistAdjust() override = default;
 };
 
 }  // namespace dali

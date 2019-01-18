@@ -18,6 +18,7 @@ add_subdirectory(operators)
 add_subdirectory(util)
 add_subdirectory(workspace)
 add_subdirectory(executor)
+add_subdirectory(proto)
 
 # Get all the source files and dump test files
 file(GLOB tmp *.cc)
@@ -40,8 +41,9 @@ if (BUILD_BENCHMARK)
   set(DALI_BENCHMARK_SRCS ${DALI_BENCHMARK_SRCS} ${tmp} PARENT_SCOPE)
 endif()
 
+set(DALI_OPERATOR_SRCS ${DALI_OPERATOR_SRCS} PARENT_SCOPE)
+
 # Get the protobuf files for pipe serialization
-protobuf_generate_cpp(DALI_PROTO_SRCS DALI_PROTO_HEADERS EXPORT_MACRO DLL_PUBLIC proto/dali.proto)
+protobuf_generate_cpp(DALI_PROTO_SRCS DALI_PROTO_HEADERS proto/dali.proto)
 add_library(DALI_PROTO OBJECT ${DALI_PROTO_HEADERS} ${DALI_PROTO_SRCS})
-SET_TARGET_PROPERTIES(DALI_PROTO PROPERTIES COMPILE_FLAGS "-include dali/api_helper.h")
 install(FILES ${DALI_PROTO_HEADERS} DESTINATION include/dali/pipeline)

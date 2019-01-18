@@ -35,13 +35,13 @@ using MixedOutputType = shared_ptr<TensorList<Backend>>;
 
 /**
  * @brief MixedWorkspace stores all data that an mixed op operates on.
- * MixedWorkspace differs from BatchWorkspace in that the input data
- * in a mixed workspace is per-sample, and the outputs are contiguous.
+ * The input data is per-sample (i.e. vectors of cpu `Tensor`),
+ * and the output data is contiguous (i.e cpu or gpu `TensorList`).
  */
 class DLL_PUBLIC MixedWorkspace : public WorkspaceBase<MixedInputType, MixedOutputType> {
  public:
   DLL_PUBLIC inline MixedWorkspace() : stream_(0) {}
-  DLL_PUBLIC inline ~MixedWorkspace() = default;
+  DLL_PUBLIC inline ~MixedWorkspace() override = default;
 
 
   /**

@@ -10,8 +10,15 @@ NVIDIA DALI documentation
    :start-after: overview-begin-marker-do-not-remove
    :end-before: overview-end-marker-do-not-remove
 
-.. warning::
-   You are currently viewing unstable developer preview of the documentation. To see the documentation for the latest stable release click `here <https://docs.nvidia.com/deeplearning/sdk/index.html#data-loading>`_
+.. ifconfig:: "dev" in release
+
+   .. warning::
+      You are currently viewing unstable developer preview of the documentation. To see the documentation for the latest stable release click `here <https://docs.nvidia.com/deeplearning/sdk/index.html#data-loading>`_
+
+.. toctree::
+   :hidden:
+
+   Documentation home <self>
 
 .. toctree::
    :maxdepth: 2
@@ -23,7 +30,6 @@ NVIDIA DALI documentation
    framework_plugins
    api
    supported_ops
-
 
 Indices and tables
 ==================

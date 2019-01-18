@@ -88,13 +88,19 @@ make_wheel_record() {
 }
 
 DEPS_LIST=(
-    "lib/libdali.so"
     "/usr/local/lib/libturbojpeg.so.0"
+    "/usr/local/lib/libavformat.so.57"
+    "/usr/local/lib/libavcodec.so.57"
+    "/usr/local/lib/libavfilter.so.6"
+    "/usr/local/lib/libavutil.so.55"
 )
 
 DEPS_SONAME=(
-    "libdali.so"
     "libturbojpeg.so.0"
+    "libavformat.so.57"
+    "libavcodec.so.57"
+    "libavfilter.so.6"
+    "libavutil.so.55"
 )
 
 TMPDIR=$(mktemp -d)
@@ -154,11 +160,11 @@ find $PKGNAME_PATH -name '*.so*' -o -name '*.bin' | while read sofile; do
     done
 done
 
-# set RPATH of backend_impl.so and similar to $ORIGIN, $ORIGIN/.libs
+# set RPATH of backend_impl.so and similar to $ORIGIN, $ORIGIN$UPDIRS, $ORIGIN$UPDIRS/.libs
 find $PKGNAME_PATH/* -type f -name "*.so*" -o -name "*.bin" | while read FILE; do
     UPDIRS=$(dirname $(echo "$FILE" | sed "s|$PKGNAME_PATH||") | sed 's/[^\/][^\/]*/../g')
-    echo "Setting rpath of $FILE to '\$ORIGIN:\$ORIGIN$UPDIRS/.libs'"
-    patchelf --set-rpath "\$ORIGIN:\$ORIGIN$UPDIRS/.libs" $FILE
+    echo "Setting rpath of $FILE to '\$ORIGIN:\$ORIGIN$UPDIRS:\$ORIGIN$UPDIRS/.libs'"
+    patchelf --set-rpath "\$ORIGIN:\$ORIGIN$UPDIRS:\$ORIGIN$UPDIRS/.libs" $FILE
     patchelf --print-rpath $FILE
 done
 

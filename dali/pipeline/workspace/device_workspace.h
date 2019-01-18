@@ -42,10 +42,10 @@ using DeviceOutputType = shared_ptr<TensorList<Backend>>;
 class DLL_PUBLIC DeviceWorkspace : public WorkspaceBase<DeviceInputType, DeviceOutputType> {
  public:
   DLL_PUBLIC DeviceWorkspace() : stream_(0) {}
-  DLL_PUBLIC ~DeviceWorkspace() = default;
+  DLL_PUBLIC ~DeviceWorkspace() override = default;
 
   /**
-   * @brief Clears the contents of the workspaces, reseting it
+   * @brief Clears the contents of the workspaces, resetting it
    * to a default state.
    */
   DLL_PUBLIC inline void Clear() {

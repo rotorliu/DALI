@@ -34,18 +34,28 @@ class DLL_PUBLIC AsyncPipelinedExecutor : public PipelinedExecutor {
  public:
   DLL_PUBLIC inline AsyncPipelinedExecutor(int batch_size, int num_thread,
       int device_id, size_t bytes_per_sample_hint,
-      bool set_affinity = false, int max_num_stream = -1) :
+      bool set_affinity = false, int max_num_stream = -1, int prefetch_queue_depth = 2) :
     PipelinedExecutor(batch_size, num_thread, device_id,
-        bytes_per_sample_hint, set_affinity, max_num_stream),
+        bytes_per_sample_hint, set_affinity, max_num_stream, prefetch_queue_depth),
     cpu_thread_(device_id, set_affinity),
     mixed_thread_(device_id, set_affinity),
     gpu_thread_(device_id, set_affinity),
-    device_id_(device_id) {}
+    device_id_(device_id) {
+  }
 
-  DLL_PUBLIC virtual ~AsyncPipelinedExecutor() {
+  DLL_PUBLIC ~AsyncPipelinedExecutor() override {
     cpu_thread_.ForceStop();
     mixed_thread_.ForceStop();
     gpu_thread_.ForceStop();
+    /*
+     * We need to call shutdown here and not rely on cpu_thread_ destructor
+     * as when WorkerThread destructor is called conditional variables and mutexes
+     * from this class may no longer exist while work inside WorkerThread is still
+     * using it what can cause a hang
+     */
+    cpu_thread_.Shutdown();
+    mixed_thread_.Shutdown();
+    gpu_thread_.Shutdown();
   }
 
   DLL_PUBLIC void Init() override {

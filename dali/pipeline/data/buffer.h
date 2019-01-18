@@ -111,7 +111,7 @@ class Buffer {
   inline const T* data() const {
     DALI_ENFORCE(IsValidType(type_),
         "Buffer has no type, 'mutable_data<T>()' must be called "
-        "on non-const buffer to set valid type");
+        "on non-const buffer to set valid type for " + type_.name());
     DALI_ENFORCE(type_.id() == TypeTable::GetTypeID<T>(),
         "Calling type does not match buffer data type: " +
         TypeTable::GetTypeName<T>() + " v. " + type_.name());
@@ -200,7 +200,7 @@ class Buffer {
    * enough memory to store the current number of elements with the
    * new data type.
    */
-  inline void set_type(TypeInfo new_type) {
+  inline void set_type(const TypeInfo &new_type) {
     DALI_ENFORCE(IsValidType(new_type), "new_type must be valid type.");
     if (new_type == type_) return;
 
@@ -227,7 +227,7 @@ class Buffer {
       data_.reset(Backend::New(new_num_bytes, pinned_), std::bind(
               &Buffer<Backend>::DeleterHelper,
               this, std::placeholders::_1,
-              type_, size_));
+              type_, size_, device_, pinned_));
       num_bytes_ = new_num_bytes;
       shares_data_ = false;
     }
@@ -243,16 +243,16 @@ class Buffer {
   // Helper function for cleaning up data storage. This unfortunately
   // has to be public so that we can bind it into the deleter of our
   // shared pointers
-  void DeleterHelper(void *ptr, TypeInfo type, Index size) {
+  void DeleterHelper(void *ptr, TypeInfo type, Index size, int device, bool pinned) {
     // change to correct device for deletion
     // Note: Can't use device guard due to potentially not GPUBackend.
     int current_device = 0;
     if (std::is_same<Backend, GPUBackend>::value) {
       CUDA_CALL(cudaGetDevice(&current_device));
-      CUDA_CALL(cudaSetDevice(device_));
+      CUDA_CALL(cudaSetDevice(device));
     }
     type.template Destruct<Backend>(ptr, size);
-    Backend::Delete(ptr, size*type.size(), pinned_);
+    Backend::Delete(ptr, size*type.size(), pinned);
 
     // reset to original calling device for consistency
     if (std::is_same<Backend, GPUBackend>::value) {
@@ -292,7 +292,8 @@ class Buffer {
       data_.reset(Backend::New(new_num_bytes, pinned_), std::bind(
               &Buffer<Backend>::DeleterHelper,
               this, std::placeholders::_1,
-              type_, new_size));
+              type_, new_size, device_, pinned_));
+
       num_bytes_ = new_num_bytes;
 
       // Call the constructor for the underlying datatype
@@ -305,7 +306,7 @@ class Buffer {
     size_ = new_size;
   }
 
-  const double alloc_mult = 1.5;
+  const double alloc_mult = 1.0;
 
   Backend backend_;
 

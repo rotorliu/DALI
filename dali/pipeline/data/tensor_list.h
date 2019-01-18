@@ -15,11 +15,13 @@
 #ifndef DALI_PIPELINE_DATA_TENSOR_LIST_H_
 #define DALI_PIPELINE_DATA_TENSOR_LIST_H_
 
+#include <assert.h>
 #include <cstring>
 #include <vector>
 
 #include "dali/pipeline/data/backend.h"
 #include "dali/pipeline/data/buffer.h"
+#include "dali/pipeline/data/meta.h"
 
 namespace dali {
 
@@ -40,10 +42,10 @@ typedef vector<Index> Dims;
 template <typename Backend>
 class DLL_PUBLIC TensorList : public Buffer<Backend> {
  public:
-  DLL_PUBLIC TensorList() : layout_(DALI_NHWC),
+  DLL_PUBLIC TensorList() : meta_(DALI_NHWC),
                             tensor_view_(nullptr) {}
 
-  DLL_PUBLIC ~TensorList() {
+  DLL_PUBLIC ~TensorList() override {
     delete tensor_view_;
   }
 
@@ -99,6 +101,12 @@ class DLL_PUBLIC TensorList : public Buffer<Backend> {
     // Calculate the new size
     Index num_tensor = new_shape.size(), new_size = 0;
     offsets_.resize(num_tensor);
+    if (!new_shape.empty()) {
+      size_t dim = new_shape[0].size();
+      for (auto &s : new_shape) {
+        DALI_ENFORCE(s.size() == dim, "All items should have same number of dimensions");
+      }
+    }
     for (Index i = 0; i < num_tensor; ++i) {
       auto tensor_size = Product(new_shape[i]);
 
@@ -226,7 +234,7 @@ class DLL_PUBLIC TensorList : public Buffer<Backend> {
   /**
    * @brief Returns the number of tensors in the list.
    */
-  DLL_PUBLIC inline int ntensor() const {
+  DLL_PUBLIC inline size_t ntensor() const {
     return shape_.size();
   }
 
@@ -244,7 +252,7 @@ class DLL_PUBLIC TensorList : public Buffer<Backend> {
   /**
    * @brief Return the shape of the tensor with the given index.
    */
-  inline vector<Index> tensor_shape(int idx) const {
+  inline const vector<Index> &tensor_shape(int idx) const {
 #ifndef NDEBUG
     DALI_ENFORCE(idx >= 0, "Negative index not supported");
     DALI_ENFORCE((size_t)idx < shape_.size(), "Index out of offset range");
@@ -255,7 +263,7 @@ class DLL_PUBLIC TensorList : public Buffer<Backend> {
   /**
    * @brief Returns the shape of the entire TensorList.
    */
-  inline vector<Dims> shape() const {
+  inline const vector<Dims> &shape() const {
     return shape_;
   }
 
@@ -309,11 +317,11 @@ class DLL_PUBLIC TensorList : public Buffer<Backend> {
   DISABLE_COPY_MOVE_ASSIGN(TensorList);
 
   inline DALITensorLayout GetLayout() const {
-    return layout_;
+    return meta_.GetLayout();
   }
 
   inline void SetLayout(DALITensorLayout layout) {
-    layout_ = layout;
+    meta_.SetLayout(layout);
   }
 
  protected:
@@ -322,7 +330,7 @@ class DLL_PUBLIC TensorList : public Buffer<Backend> {
   // underlying allocation for random access
   vector<Dims> shape_;
   vector<Index> offsets_;
-  DALITensorLayout layout_;
+  DALIMeta meta_;
 
   // In order to not leak memory (and make it slightly faster)
   // when sharing data with a Tensor, we will store a pointer to

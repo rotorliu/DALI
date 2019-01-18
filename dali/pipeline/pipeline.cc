@@ -20,10 +20,95 @@
 #include <functional>
 #include <memory>
 
+#include "dali/pipeline/executor/pipelined_executor.h"
+#include "dali/pipeline/executor/async_pipelined_executor.h"
+
 #include "dali/pipeline/operators/argument.h"
 #include "dali/pipeline/util/device_guard.h"
+#include "dali/pipeline/dali.pb.h"
 
 namespace dali {
+
+  void DeserializeOpSpec(const dali_proto::OpDef& def, OpSpec* spec) {
+    spec->set_name(def.name());
+
+    // Extract all the arguments with correct types
+    for (auto &arg : def.args()) {
+      auto name = arg.name();
+      const DaliProtoPriv arg_wrap(&arg);
+
+      spec->AddInitializedArg(name, DeserializeProtobuf(arg_wrap));
+    }
+
+    for (int i = 0; i < def.input_size(); ++i) {
+      if (!def.input(i).is_argument_input()) {
+        spec->AddInput(def.input(i).name(), def.input(i).device());
+      }
+    }
+
+    for (int i = 0; i < def.input_size(); ++i) {
+      if (def.input(i).is_argument_input()) {
+        spec->AddArgumentInput(def.input(i).arg_name(), def.input(i).name());
+      }
+    }
+
+    for (int i = 0; i < def.output_size(); ++i) {
+      spec->AddOutput(def.output(i).name(), def.output(i).device());
+    }
+  }
+
+  Pipeline::Pipeline(const string &serialized_pipe,
+      int batch_size, int num_threads, int device_id,
+      bool pipelined_execution, int prefetch_queue_depth,
+      bool async_execution, size_t bytes_per_sample_hint,
+      bool set_affinity, int max_num_stream) : built_(false) {
+    dali_proto::PipelineDef def;
+    def.ParseFromString(serialized_pipe);
+
+    // If not given, take parameters from the
+    // serialized pipeline
+    if (batch_size == -1) {
+      this->batch_size_ = def.batch_size();
+    } else {
+      this->batch_size_ = batch_size;
+    }
+    if (device_id == -1) {
+      this->device_id_ = def.device_id();
+    } else {
+      this->device_id_ = device_id;
+    }
+    if (num_threads == -1) {
+      this->num_threads_ = def.num_threads();
+    } else {
+      this->num_threads_ = num_threads;
+    }
+
+    Init(this->batch_size_, this->num_threads_,
+         this->device_id_, def.seed(),
+         pipelined_execution,
+         async_execution,
+         bytes_per_sample_hint,
+         set_affinity,
+         max_num_stream,
+         prefetch_queue_depth);
+
+    // from serialized pipeline, construct new pipeline
+    // All external inputs
+    for (auto& ex : def.external_inputs()) {
+      this->AddExternalInput(ex);
+    }
+    // all operators
+    for (auto& op_def : def.op()) {
+      OpSpec spec;
+      dali::DeserializeOpSpec(op_def, &spec);
+
+      this->AddOperator(spec, op_def.inst_name());
+    }
+    // output names
+    for (auto& output : def.pipe_outputs()) {
+      this->output_names_.push_back(std::make_pair(output.name(), output.device()));
+    }
+  }
 
 void Pipeline::AddOperator(OpSpec spec, const std::string& inst_name) {
   DALI_ENFORCE(!built_, "Alterations to the pipeline after "
@@ -162,20 +247,20 @@ void Pipeline::Build(vector<std::pair<string, string>> output_names) {
     executor_.reset(new AsyncPipelinedExecutor(
             batch_size_, num_threads_,
             device_id_, bytes_per_sample_hint_,
-            set_affinity_, max_num_stream_));
+            set_affinity_, max_num_stream_, prefetch_queue_depth_));
     executor_->Init();
   } else if (pipelined_execution_) {
     executor_.reset(new PipelinedExecutor(
             batch_size_, num_threads_,
             device_id_, bytes_per_sample_hint_,
-            set_affinity_, max_num_stream_));
+            set_affinity_, max_num_stream_, prefetch_queue_depth_));
   } else if (async_execution_) {
     DALI_FAIL("Not implemented.");
   } else {
     executor_.reset(new Executor(
             batch_size_, num_threads_,
             device_id_, bytes_per_sample_hint_,
-            set_affinity_, max_num_stream_));
+            set_affinity_, max_num_stream_, prefetch_queue_depth_));
   }
 
   // Creating the graph
@@ -183,7 +268,15 @@ void Pipeline::Build(vector<std::pair<string, string>> output_names) {
     string& inst_name = name_op_spec.first;
     OpSpec op_spec = name_op_spec.second;
     PrepareOpSpec(&op_spec);
-    graph_.AddOp(op_spec, inst_name);
+    try {
+      graph_.AddOp(op_spec, inst_name);
+    } catch (std::runtime_error &e) {
+      throw std::runtime_error("Critical error in pipeline: "
+          + std::string(e.what())
+          + "\nCurrent pipeline object is no longer valid.");
+    } catch (...) {
+      throw std::runtime_error("Unknown Critical error in pipeline");
+    }
   }
 
   // Validate the output tensors names
@@ -256,6 +349,10 @@ void Pipeline::RunGPU() {
   executor_->RunGPU();
 }
 
+void Pipeline::SetCompletionCallback(Executor::ExecutorCallback cb) {
+  executor_->SetCompletionCallback(cb);
+}
+
 void Pipeline::Outputs(DeviceWorkspace *ws) {
   DALI_ENFORCE(built_,
       "\"Build()\" must be called prior to executing the pipeline.");
@@ -270,17 +367,37 @@ void Pipeline::Outputs(DeviceWorkspace *ws) {
     }
 }
 
+void Pipeline::ShareOutputs(DeviceWorkspace *ws) {
+  DALI_ENFORCE(built_,
+      "\"Build()\" must be called prior to executing the pipeline.");
+    try {
+      executor_->ShareOutputs(ws);
+    } catch (std::runtime_error &e) {
+      throw std::runtime_error("Critical error in pipeline: "
+          + std::string(e.what())
+          + "\nCurrent pipeline object is no longer valid.");
+    } catch (...) {
+      throw std::runtime_error("Unknown Critical error in pipeline");
+    }
+}
+
+void Pipeline::ReleaseOutputs() {
+  DALI_ENFORCE(built_,
+      "\"Build()\" must be called prior to executing the pipeline.");
+    try {
+      executor_->ReleaseOutputs();
+    } catch (std::runtime_error &e) {
+      throw std::runtime_error("Critical error in pipeline: "
+          + std::string(e.what())
+          + "\nCurrent pipeline object is no longer valid.");
+    } catch (...) {
+      throw std::runtime_error("Unknown Critical error in pipeline");
+    }
+}
+
 void Pipeline::SetupCPUInput(std::map<string, EdgeMeta>::iterator it,
     int input_idx, OpSpec *spec) {
   if (!it->second.has_contiguous) {
-    // We check if the make contiguous op already exists
-    std::string op_name = "__MakeContiguous_" + it->first;
-    if (std::find_if(op_specs_.begin(), op_specs_.end(),
-          [&op_name] (const std::pair<string, OpSpec>& p) {
-                  return p.first == op_name;}) != op_specs_.end()) {
-      return;
-    }
-
     OpSpec make_contiguous_spec =
       OpSpec("MakeContiguous")
       .AddArg("device", "mixed")
@@ -288,6 +405,7 @@ void Pipeline::SetupCPUInput(std::map<string, EdgeMeta>::iterator it,
       .AddOutput("contiguous_" + it->first, "cpu");
     this->op_specs_.push_back(make_pair("__MakeContiguous_" + it->first, make_contiguous_spec));
     this->op_specs_to_serialize_.push_back(false);
+    it->second.has_contiguous = true;
   }
 
   // Update the OpSpec to use the contiguous input
@@ -300,14 +418,6 @@ void Pipeline::SetupCPUInput(std::map<string, EdgeMeta>::iterator it,
 
 void Pipeline::SetupGPUInput(std::map<string, EdgeMeta>::iterator it) {
   if (it->second.has_gpu) return;
-  // We check if the copy_to_dev op already exists
-  std::string op_name = "__Copy_" + it->first;
-  if (std::find_if(op_specs_.begin(), op_specs_.end(),
-        [&op_name] (const std::pair<string, OpSpec>& p) {
-                return p.first == op_name;}) != op_specs_.end()) {
-    return;
-  }
-
   OpSpec copy_to_dev_spec =
     OpSpec("MakeContiguous")
     .AddArg("device", "mixed")
@@ -315,6 +425,7 @@ void Pipeline::SetupGPUInput(std::map<string, EdgeMeta>::iterator it) {
     .AddOutput(it->first, "gpu");
   this->op_specs_.push_back(make_pair("__Copy_" + it->first, copy_to_dev_spec));
   this->op_specs_to_serialize_.push_back(false);
+  it->second.has_gpu = true;
 }
 
 void Pipeline::PrepareOpSpec(OpSpec *spec) {
@@ -324,6 +435,48 @@ void Pipeline::PrepareOpSpec(OpSpec *spec) {
     .AddArg("seed", seed_[current_seed_])
     .AddArg("device_id", device_id_);
   current_seed_ = (current_seed_+1) % MAX_SEEDS;
+}
+
+/**
+ * @brief Helper method that serialized OpSpec
+ * decouples spec class from dali_proto
+ */
+void SerializeToProtobuf(dali_proto::OpDef *op, const string& inst_name,
+                            const OpSpec& spec) {
+  op->set_name(spec.name());
+  op->set_inst_name(inst_name);
+
+  for (int i = 0; i < spec.NumInput(); ++i) {
+    dali_proto::InputOutput *in = op->add_input();
+    in->set_name(spec.InputName(i));
+    in->set_device(spec.InputDevice(i));
+    if (spec.IsArgumentInput(i)) {
+        in->set_arg_name(spec.ArgumentInputName(i));
+    }
+    in->set_is_argument_input(spec.IsArgumentInput(i));
+  }
+
+  for (int i = 0; i < spec.NumOutput(); ++i) {
+    dali_proto::InputOutput *out = op->add_output();
+    out->set_name(spec.OutputName(i));
+    out->set_device(spec.OutputDevice(i));
+    out->set_is_argument_input(false);
+  }
+
+  for (auto& a : spec.Arguments()) {
+    // filter out args that need to be dealt with on
+    // loading a serialized pipeline
+    if (a.first == "batch_size" ||
+        a.first == "num_threads" ||
+        a.first == "bytes_per_sample_hint") {
+      continue;
+    }
+
+    dali_proto::Argument *arg = op->add_args();
+    DaliProtoPriv arg_wrap(arg);
+
+    a.second->SerializeToProtobuf(&arg_wrap);
+  }
 }
 
 string Pipeline::SerializeToProtobuf() const {
@@ -348,7 +501,7 @@ string Pipeline::SerializeToProtobuf() const {
 
       // As long as spec isn't an ExternalSource node, serialize
       if (spec.name() != "ExternalSource") {
-        spec.SerializeToProtobuf(op_def, p.first);
+        dali::SerializeToProtobuf(op_def, p.first, spec);
       }
     }
   }

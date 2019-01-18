@@ -15,16 +15,19 @@
 #ifndef DALI_PIPELINE_DATA_TENSOR_H_
 #define DALI_PIPELINE_DATA_TENSOR_H_
 
+#include <algorithm>
 #include <cstring>
+#include <memory>
+#include <string>
 #include <utility>
 #include <vector>
-#include <algorithm>
 
 #include "dali/common.h"
 #include "dali/error_handling.h"
 #include "dali/pipeline/data/backend.h"
 #include "dali/pipeline/data/buffer.h"
 #include "dali/pipeline/data/tensor_list.h"
+#include "dali/pipeline/data/meta.h"
 
 namespace dali {
 
@@ -35,8 +38,38 @@ namespace dali {
 template <typename Backend>
 class Tensor : public Buffer<Backend> {
  public:
-  inline Tensor() : layout_(DALI_NHWC) {}
-  inline ~Tensor() = default;
+  inline Tensor() : meta_(DALI_NHWC) {}
+  inline ~Tensor() override = default;
+
+  /**
+   *
+   * @brief For tensor T of shape (s_0, s_1, ..., s_{n-1}) returns a n-1 dimensional tensor T'
+   *        of shape (s_1, s_2, ..., s_{n-1}), such that
+   *        T'(x_1, x_2, ..., x_{n-1}) = T(x, x_1, x_2, ..., x_{n-1})
+   *        for param 'x' and any valid x_1, x_2, ..., x_{n-1}
+   *
+   * Tensor should have at least 2 dimensions.
+   * Returned tensor is treated as a view to this tensors and shares memory with it.
+   * @param x Subspace between 0 and dim(0) - 1.
+   * @return Tensor<Backend>
+   */
+  Tensor<Backend> SubspaceTensor(Index x) {
+    DALI_ENFORCE(ndim() > 1,
+                 "To obtain subspace tensor, source tensor should have at least 2 dimensions");
+    DALI_ENFORCE(0 <= x && x < dim(0), "'x' should be valid index to first dimension: [0, dim(0))");
+    Tensor<Backend> view;
+    view.shape_ = std::vector<Index>(shape_.begin() + 1, shape_.end());
+    view.backend_ = backend_;
+    view.type_ = type_;
+    view.size_ = size_ / shape_[0];
+    view.num_bytes_ = view.type_.size() * view.size_;
+    // Point to data, as we are sharing use no-op deleter
+    view.data_.reset(static_cast<uint8_t *>(this->raw_mutable_data()) + x * view.num_bytes_,
+                     [](void *) {});
+    view.shares_data_ = true;
+    view.device_ = device_;
+    return view;
+  }
 
   /**
    * Loads the Tensor with data from the input vector.
@@ -58,6 +91,19 @@ class Tensor : public Buffer<Backend> {
     this->ResizeLike(other);
     type_.template Copy<Backend, InBackend>(this->raw_mutable_data(),
         other.raw_data(), this->size(), stream);
+  }
+
+  /**
+   * @brief Loads the Tensor at index idx from the input TensorList.
+   */
+  template <typename InBackend>
+  inline void Copy(const TensorList<InBackend> &other, int idx, cudaStream_t stream) {
+    shape_ = other.tensor_shape(idx);
+    device_ = other.device_id();
+    this->set_type(other.type());
+    this->Resize(shape_);
+    type_.template Copy<Backend, InBackend>(this->raw_mutable_data(),
+        other.raw_tensor(idx), this->size(), stream);
   }
 
   template <typename InBackend>
@@ -97,7 +143,7 @@ class Tensor : public Buffer<Backend> {
     DALI_ENFORCE(IsValidType(tl->type()), "To share data, "
         "the input TensorList must have a valid data type.");
     DALI_ENFORCE(idx >= 0, "Negative tensor index not supported.");
-    DALI_ENFORCE(idx < tl->ntensor(), "Index of " + std::to_string(idx) +
+    DALI_ENFORCE(static_cast<size_t>(idx) < tl->ntensor(), "Index of " + std::to_string(idx) +
         " out of range for TensorList of size " + std::to_string(tl->ntensor()));
 
     // Reset our pointer to the correct offset inside the tensor list.
@@ -202,7 +248,7 @@ class Tensor : public Buffer<Backend> {
   /**
    * @brief Returns the shape of the Tensor
    */
-  inline vector<Index> shape() const {
+  inline const vector<Index> &shape() const {
     return shape_;
   }
 
@@ -230,6 +276,9 @@ class Tensor : public Buffer<Backend> {
    */
   inline void Squeeze() {
     shape_.erase(std::remove(shape_.begin(), shape_.end(), 1), shape_.end());
+    if (shape_.empty()) {
+      shape_.push_back(1);
+    }
   }
 
   /**
@@ -293,17 +342,24 @@ class Tensor : public Buffer<Backend> {
   }
 
   inline DALITensorLayout GetLayout() const {
-    return layout_;
+    return meta_.GetLayout();
   }
 
   inline void SetLayout(DALITensorLayout layout) {
-    layout_ = layout;
+    meta_.SetLayout(layout);
+  }
+
+  inline string GetSourceInfo() const {
+    return meta_.GetSourceInfo();
+  }
+
+  inline void SetSourceInfo(string source_info) {
+    meta_.SetSourceInfo(source_info);
   }
 
  protected:
   vector<Index> shape_;
-  DALITensorLayout layout_;
-
+  DALIMeta meta_;
   USE_BUFFER_MEMBERS();
 };
 

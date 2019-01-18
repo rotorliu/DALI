@@ -32,13 +32,13 @@ class RecordIOLoader : public IndexedFileLoader {
     : IndexedFileLoader(options, false) {
     Init(options);
   }
-  ~RecordIOLoader() {}
+  ~RecordIOLoader() override {}
 
   void ReadIndexFile(const std::vector<std::string>& index_uris) override {
     std::vector<size_t> file_offsets;
     file_offsets.push_back(0);
     for (std::string& path : uris_) {
-      FileStream * tmp = FileStream::Open(path);
+      auto tmp = FileStream::Open(path);
       file_offsets.push_back(tmp->Size() + file_offsets.back());
       tmp->Close();
     }
@@ -46,8 +46,10 @@ class RecordIOLoader : public IndexedFileLoader {
         "RecordIOReader supports only a single index file");
     const std::string& path = index_uris[0];
     std::ifstream index_file(path);
+    DALI_ENFORCE(index_file.good(),
+        "Could not open RecordIO index file. Provided path: \"" + path + "\"");
     std::vector<size_t> temp;
-    size_t index, offset;
+    size_t index, offset, prev_offset = -1;
     while (index_file >> index >> offset) {
       temp.push_back(offset);
     }
@@ -57,13 +59,19 @@ class RecordIOLoader : public IndexedFileLoader {
       if (temp[i] >= file_offsets[file_offset_index + 1]) {
         ++file_offset_index;
       }
-      indices_.push_back(std::make_tuple(temp[i] - file_offsets[file_offset_index],
-                                         temp[i + 1] - temp[i],
-                                         file_offset_index));
+      int64 size = temp[i + 1] - temp[i];
+      // skip 0 sized images
+      if (size) {
+        indices_.push_back(std::make_tuple(temp[i] - file_offsets[file_offset_index],
+                                          size, file_offset_index));
+      }
     }
-    indices_.push_back(std::make_tuple(temp.back() - file_offsets[file_offset_index],
-                                       file_offsets.back() - temp.back(),
-                                       file_offset_index));
+    int64 size = file_offsets.back() - temp.back();
+    // skip 0 sized images
+    if (size) {
+      indices_.push_back(std::make_tuple(temp.back() - file_offsets[file_offset_index],
+                                        size, file_offset_index));
+    }
     index_file.close();
   }
 
@@ -71,7 +79,7 @@ class RecordIOLoader : public IndexedFileLoader {
     if (current_index_ == static_cast<size_t>(Size())) {
       current_index_ = 0;
       current_file_index_ = 0;
-      current_file_.reset(FileStream::Open(uris_[current_file_index_]));
+      current_file_ = FileStream::Open(uris_[current_file_index_]);
     }
 
     int64 seek_pos, size;
@@ -81,13 +89,14 @@ class RecordIOLoader : public IndexedFileLoader {
     tensor->Resize({size});
 
     int64 n_read = 0;
+    tensor->SetSourceInfo(uris_[current_file_index_] + " at index " + to_string(seek_pos));
     while (n_read < size) {
       n_read += current_file_->Read(tensor->mutable_data<uint8_t>() + n_read,
                      size - n_read);
       if (n_read < size) {
         DALI_ENFORCE(current_file_index_ + 1 < uris_.size(),
             "Incomplete or corrupted record files");
-        current_file_.reset(FileStream::Open(uris_[++current_file_index_]));
+        current_file_ = FileStream::Open(uris_[++current_file_index_]);
       }
     }
     ++current_index_;

@@ -12,118 +12,58 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "dali/pipeline/executor/executor.h"
-
-#include <opencv2/opencv.hpp>
-
-#include "dali/pipeline/operators/util/external_source.h"
-#include "dali/test/dali_test.h"
+#include "dali/test/dali_test_decoder.h"
 
 namespace dali {
 
-namespace {
-// Our turbo jpeg decoder cannot handle CMYK images
-// or 410 images
-const vector<string> tjpg_test_images = {
-  image_folder + "/420.jpg",
-  image_folder + "/422.jpg",
-  image_folder + "/440.jpg",
-  image_folder + "/444.jpg",
-  image_folder + "/gray.jpg",
-  image_folder + "/411.jpg",
-  image_folder + "/411-non-multiple-4-width.jpg",
-  image_folder + "/420-odd-height.jpg",
-  image_folder + "/420-odd-width.jpg",
-  image_folder + "/420-odd-both.jpg",
-  image_folder + "/422-odd-width.jpg"
-};
-}  // namespace
+class ExecutorTest : public GenericDecoderTest<RGB> {
+ protected:
+  uint32_t GetImageLoadingFlags() const override {
+    return t_loadJPEGs + t_decodeJPEGs;
+  }
 
-class ExecutorTest : public DALITest {
- public:
   void SetUp() override {
-    rand_gen_.seed(time(nullptr));
-    LoadJPEGS(tjpg_test_images, &jpegs_, &jpeg_sizes_);
-    batch_size_ = jpegs_.size();
-    DecodeJPEGS(DALI_RGB);
+    DALISingleOpTest::SetUp();
+    set_batch_size(jpegs_.nImages());
   }
 
   inline void set_batch_size(int size) { batch_size_ = size; }
 
-  inline OpSpec PrepareSpec(OpSpec spec) {
+  inline OpSpec PrepareSpec(OpSpec spec) const {
     spec.AddArg("batch_size", batch_size_)
       .AddArg("num_threads", num_threads_);
     return spec;
   }
 
-  inline void PruneGraph(Executor *exe) {
+  inline void PruneGraph(Executor *exe) const {
     exe->PruneUnusedGraphNodes();
   }
 
-  vector<HostWorkspace> CPUData(Executor *exe, int idx) {
+  vector<HostWorkspace> CPUData(Executor *exe, int idx) const {
     return exe->wss_[idx].cpu_op_data;
   }
 
-  vector<MixedWorkspace> MixedData(Executor *exe, int idx) {
+  vector<MixedWorkspace> MixedData(Executor *exe, int idx) const {
     return exe->wss_[idx].mixed_op_data;
   }
 
-  vector<DeviceWorkspace> GPUData(Executor *exe, int idx) {
+  vector<DeviceWorkspace> GPUData(Executor *exe, int idx) const {
     return exe->wss_[idx].gpu_op_data;
   }
 
-  void VerifyDecode(const uint8 *img, int h, int w, int img_id) {
+  void VerifyDecode(const uint8 *img, int h, int w, int img_id) const {
     // Load the image to host
     uint8 *host_img = new uint8[h*w*c_];
     CUDA_CALL(cudaMemcpy(host_img, img, h*w*c_, cudaMemcpyDefault));
 
-    // Compare w/ opencv result
-    cv::Mat ver;
-    cv::Mat jpeg = cv::Mat(1, jpeg_sizes_[img_id], CV_8UC1, jpegs_[img_id]);
-
-    ASSERT_TRUE(CheckIsJPEG(jpegs_[img_id], jpeg_sizes_[img_id]));
-    int flag = IsColor(img_type_) ? CV_LOAD_IMAGE_COLOR : CV_LOAD_IMAGE_GRAYSCALE;
-    cv::imdecode(jpeg, flag, &ver);
-
-    cv::Mat ver_img(h, w, IsColor(img_type_) ? CV_8UC3 : CV_8UC2);
-    if (img_type_ == DALI_RGB) {
-      // Convert from BGR to RGB for verification
-      cv::cvtColor(ver, ver_img, CV_BGR2RGB);
-    } else {
-      ver_img = ver;
-    }
-
-    // DEBUG
-    // WriteHWCImage(ver_img.ptr(), h, w, c_, std::to_string(img_id) + "-ver");
-
-    ASSERT_EQ(h, ver_img.rows);
-    ASSERT_EQ(w, ver_img.cols);
-    vector<int> diff(h*w*c_, 0);
-    for (int i = 0; i < h*w*c_; ++i) {
-      diff[i] = abs(static_cast<int>(ver_img.ptr()[i] - host_img[i]));
-    }
-
-    // calculate the MSE
-    double mean, std;
-    this->MeanStdDev(diff, &mean, &std);
-
-#ifndef NDEBUG
-    cout << "num: " << diff.size() << endl;
-    cout << "mean: " << mean << endl;
-    cout << "std: " << std << endl;
+#if DALI_DEBUG
+    WriteHWCImage(host_img, h, w, c_, std::to_string(img_id) + "-img");
 #endif
-
-    // Note: We allow a slight deviation from the ground truth.
-    // This value was picked fairly arbitrarily to let the test
-    // pass for libjpeg turbo
-    ASSERT_LT(mean, 2.f);
-    ASSERT_LT(std, 3.f);
+    GenericDecoderTest::VerifyDecode(host_img, h, w, jpegs_, img_id);
+    delete [] host_img;
   }
 
- protected:
   int batch_size_, num_threads_ = 1;
-  int c_ = 3;
-  DALIImageType img_type_ = DALI_RGB;
 };
 
 TEST_F(ExecutorTest, TestPruneBasicGraph) {
@@ -451,9 +391,58 @@ TEST_F(ExecutorTest, TestRunBasicGraph) {
   ASSERT_TRUE(ws.OutputIsType<CPUBackend>(0));
 }
 
+TEST_F(ExecutorTest, TestRunBasicGraphWithCB) {
+  Executor exe(this->batch_size_, this->num_threads_, 0, 1);
+
+  // Build a basic cpu->gpu graph
+  OpGraph graph;
+  graph.AddOp(this->PrepareSpec(
+          OpSpec("ExternalSource")
+          .AddArg("device", "cpu")
+          .AddOutput("data", "cpu")), "");
+
+  graph.AddOp(this->PrepareSpec(
+          OpSpec("HostDecoder")
+          .AddArg("device", "cpu")
+          .AddInput("data", "cpu")
+          .AddOutput("images", "cpu")), "");
+
+  graph.AddOp(this->PrepareSpec(
+          OpSpec("MakeContiguous")
+          .AddArg("device", "mixed")
+          .AddInput("images", "cpu")
+          .AddOutput("final_images", "cpu")), "");
+
+  vector<string> outputs = {"final_images_cpu"};
+  int cb_counter = 0;
+  exe.SetCompletionCallback([&cb_counter]() {
+    ++cb_counter;
+  });
+  exe.Build(&graph, outputs);
+
+  // Set the data for the external source
+  auto *src_op = dynamic_cast<ExternalSource<CPUBackend>*>(&graph.cpu_op(0));
+  ASSERT_NE(src_op, nullptr);
+  TensorList<CPUBackend> tl;
+  this->MakeJPEGBatch(&tl, this->batch_size_);
+  src_op->SetDataSource(tl);
+
+  exe.RunCPU();
+  exe.RunMixed();
+  exe.RunGPU();
+
+  DeviceWorkspace ws;
+  exe.Outputs(&ws);
+  ASSERT_EQ(ws.NumInput(), 0);
+  ASSERT_EQ(ws.NumOutput(), 1);
+  ASSERT_EQ(cb_counter, 1);
+  ASSERT_TRUE(ws.OutputIsType<CPUBackend>(0));
+}
+
 TEST_F(ExecutorTest, TestPrefetchedExecution) {
   int batch_size = this->batch_size_ / 2;
   this->set_batch_size(batch_size);
+  this->SetEps(1.6);
 
   Executor exe(this->batch_size_, this->num_threads_, 0, 1);
 
@@ -483,6 +472,10 @@ TEST_F(ExecutorTest, TestPrefetchedExecution) {
           .AddOutput("final_images", "gpu")), "");
 
   vector<string> outputs = {"final_images_gpu"};
+  int cb_counter = 0;
+  exe.SetCompletionCallback([&cb_counter]() {
+    ++cb_counter;
+  });
   exe.Build(&graph, outputs);
 
   // Set the data for the external source
@@ -518,6 +511,7 @@ TEST_F(ExecutorTest, TestPrefetchedExecution) {
   exe.RunMixed();
   exe.RunGPU();
 
+  ASSERT_EQ(cb_counter, 1);
   src_op->SetDataSource(tl2);
   exe.RunCPU();
   exe.RunMixed();
@@ -541,6 +535,7 @@ TEST_F(ExecutorTest, TestPrefetchedExecution) {
   ASSERT_EQ(ws.NumOutput(), 1);
   ASSERT_EQ(ws.NumInput(), 0);
   ASSERT_TRUE(ws.OutputIsType<GPUBackend>(0));
+  ASSERT_EQ(cb_counter, 2);
   TensorList<GPUBackend> *res2 = ws.Output<GPUBackend>(0);
   for (int i = 0; i < batch_size; ++i) {
     this->VerifyDecode(

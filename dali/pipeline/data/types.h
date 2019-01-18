@@ -15,13 +15,6 @@
 #ifndef DALI_PIPELINE_DATA_TYPES_H_
 #define DALI_PIPELINE_DATA_TYPES_H_
 
-// workaround missing "is_trivially_copyable" in g++ < 5.0
-#if __cplusplus && __GNUC__ < 5 && !__clang__
-#include <boost/type_traits/has_trivial_copy.hpp>
-#define IS_TRIVIALLY_COPYABLE(T) ::boost::has_trivial_copy<T>::value
-#else
-#define IS_TRIVIALLY_COPYABLE(T) std::is_trivially_copyable<T>::value
-#endif
 
 #include <cstdint>
 #include <cstring>
@@ -35,7 +28,20 @@
 #include <unordered_map>
 
 #include "dali/common.h"
+#include "dali/util/cuda_utils.h"
 #include "dali/error_handling.h"
+
+// Workaround missing "is_trivially_copyable" in libstdc++ for g++ < 5.0.
+// We have to first include some standard library headers, so to have __GLIBCXX__ symbol,
+// and we have to exclude the specific version used in manylinux for our CI, because
+// clang always defines __GNUC__ to 4. __GLIBCXX__ is not a linear ordering based on
+// version of library but the date of the release so we can have 4.9.4 > 5.1.
+#if __GLIBCXX__ == 20150212 || (__cplusplus && __GNUC__ < 5 && !__clang__)
+#include <boost/type_traits/has_trivial_copy.hpp>
+#define IS_TRIVIALLY_COPYABLE(T) ::boost::has_trivial_copy<T>::value
+#else
+#define IS_TRIVIALLY_COPYABLE(T) std::is_trivially_copyable<T>::value
+#endif
 
 #ifdef DALI_BUILD_PROTO3
 #include "dali/pipeline/operators/reader/parser/tf_feature.h"
@@ -120,7 +126,7 @@ class DLL_PUBLIC TypeInfo {
     return type_size_;
   }
 
-  DLL_PUBLIC inline string name() const {
+  DLL_PUBLIC inline const string &name() const {
     return name_;
   }
 
@@ -182,6 +188,13 @@ class DLL_PUBLIC TypeInfo {
   string name_;
 };
 
+template <typename T>
+struct TypeNameHelper {
+  static string GetTypeName() {
+    return typeid(T).name();
+  }
+};
+
 /**
  * @brief Keeps track of mappings between types and unique identifiers.
  */
@@ -195,18 +208,8 @@ class DLL_PUBLIC TypeTable {
   }
 
   template <typename T>
-  DLL_PUBLIC static typename std::enable_if<
-    !is_vector<T>::value &&
-    !is_array<T>::value,
-    string>::type GetTypeName() {
-    return typeid(T).name();
-  }
-
-  template <typename T>
-  DLL_PUBLIC static typename std::enable_if<
-    is_vector<T>::value || is_array<T>::value,
-    string>::type GetTypeName() {
-    return "list of " + GetTypeName<typename T::value_type>();
+  DLL_PUBLIC static string GetTypeName() {
+    return TypeNameHelper<T>::GetTypeName();
   }
 
   DLL_PUBLIC static const TypeInfo& GetTypeInfo(DALIDataType dtype) {
@@ -246,6 +249,21 @@ class DLL_PUBLIC TypeTable {
   // so we need to use size_t instead of DALIDataType
   static std::unordered_map<size_t, TypeInfo> type_info_map_;
   static int index_;
+};
+
+
+template <typename T, typename A>
+struct TypeNameHelper<std::vector<T, A> > {
+  static string GetTypeName() {
+    return "list of " + TypeTable::GetTypeName<T>();
+  }
+};
+
+template <typename T, size_t N>
+struct TypeNameHelper<std::array<T, N> > {
+  static string GetTypeName() {
+    return "list of " + TypeTable::GetTypeName<T>();
+  }
 };
 
 template <typename T>

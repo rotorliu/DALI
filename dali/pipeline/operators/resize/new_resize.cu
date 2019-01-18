@@ -55,7 +55,7 @@ void DataDependentSetupCPU(const Tensor<CPUBackend> &input,
                            Tensor<CPUBackend> *output, const char *pOpName,
                            const uint8 **ppInRaster, uint8 **ppOutRaster,
                            vector<DALISize> *pSizes, const DALISize *out_size) {
-  DALI_ENFORCE(input.ndim() == 3);
+  DALI_ENFORCE(input.ndim() == 3, "Operator expects 3-dimensional image input.");
   DALI_ENFORCE(IsType<uint8>(input.type()), "Expects input data in uint8.");
 
   const vector<Index> &shape = input.shape();
@@ -271,7 +271,9 @@ class PixMappingHelper {
 // ResizeParamDescr::pResizeParam_ and copied on GPU in NewResize<GPUBackend>::RunImpl
 // by resizeParamGPU_.Copy(...)
 
-__global__ void ConstructResizeTables(size_t nBatchSlice, const ResizeGridParam *resizeParam,
+__global__ void
+__launch_bounds__(1024, 1)
+ConstructResizeTables(size_t nBatchSlice, const ResizeGridParam *resizeParam,
                        const DALISize *in_sizes, int C, int W0, MappingInfo *pResizeMapping[]) {
   int imagIdx = blockIdx.x;
   size_t idx = imagIdx % nBatchSlice;

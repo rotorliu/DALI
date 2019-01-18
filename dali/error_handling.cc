@@ -33,10 +33,16 @@ void DALISetLastError(string error_str) {
   g_dali_error_string = error_str;
 }
 
+void DALIAppendToLastError(string error_str) {
+  // Adds additional info to previously returned error
+  g_dali_error_string += error_str;
+}
+
 void DALIReportFatalProblem(const char *file, int lineNumb, const char *pComment) {
   dali::string line = std::to_string(lineNumb);
   dali::string error_str = "[" + dali::string(file) + ":" + line + "] " + pComment;
   throw std::runtime_error(error_str);
 }
+
 
 }  // namespace dali

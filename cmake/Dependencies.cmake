@@ -39,6 +39,10 @@ if (BUILD_NVJPEG)
   list(APPEND DALI_LIBS ${NVJPEG_LIBRARY})
   list(APPEND DALI_EXCLUDES libnvjpeg_static.a)
   add_definitions(-DDALI_USE_NVJPEG)
+
+  if (${NVJPEG_LIBRARY_0_2_0})
+    add_definitions(-DNVJPEG_LIBRARY_0_2_0)
+  endif()
 else()
   # Note: Support for disabling nvJPEG is unofficial
   message(STATUS "Building WITHOUT nvJPEG")
@@ -46,8 +50,6 @@ endif()
 
 # NVIDIA NPPC library
 find_cuda_helper_libs(nppc_static)
-list(APPEND DALI_LIBS ${CUDA_nppc_static_LIBRARY})
-list(APPEND DALI_EXCLUDES libnppc_static.a)
 
 # NVIDIA NPPI library
 if (${CUDA_VERSION} VERSION_LESS "9.0")
@@ -66,6 +68,8 @@ else()
                             libnppicc_static.a
                             libnppig_static.a)
 endif()
+list(APPEND DALI_LIBS ${CUDA_nppc_static_LIBRARY})
+list(APPEND DALI_EXCLUDES libnppc_static.a)
 
 # CULIBOS needed when using static CUDA libs
 find_cuda_helper_libs(culibos)
@@ -106,7 +110,9 @@ endif()
 message(STATUS "Found OpenCV: ${OpenCV_INCLUDE_DIRS} (found suitable version \"${OpenCV_VERSION}\", minimum required is \"2.0\")")
 include_directories(SYSTEM ${OpenCV_INCLUDE_DIRS})
 list(APPEND DALI_LIBS ${OpenCV_LIBRARIES})
-list(APPEND DALI_EXCLUDES libopencv_core.a;libopencv_imgproc.a;libopencv_highgui.a;libopencv_imgcodecs.a)
+list(APPEND DALI_EXCLUDES libopencv_core.a;libopencv_imgproc.a;libopencv_highgui.a;libopencv_imgcodecs.a;
+                          liblibwebp.a;libittnotify.a;libpng.a;liblibtiff.a;liblibjasper.a;libIlmImf.a;
+                          liblibjpeg-turbo.a)
 
 ##################################################################
 # PyBind
@@ -129,6 +135,8 @@ endif()
 ##################################################################
 # protobuf
 ##################################################################
+# link statically
+set(Protobuf_USE_STATIC_LIBS "ON")
 find_package(Protobuf 2.0 REQUIRED)
 if(${Protobuf_VERSION} VERSION_LESS "3.0")
   message(STATUS "TensorFlow TFRecord file format support is not available with Protobuf 2")
@@ -139,7 +147,45 @@ else()
 endif()
 include_directories(SYSTEM ${PROTOBUF_INCLUDE_DIRS})
 list(APPEND DALI_LIBS ${PROTOBUF_LIBRARY})
-## Don't exclude protobuf symbols here; doing so will lead to segfaults
-## Instead we'll use EXPORT_MACRO DLL_PUBLIC later in dali/*/CMakeLists.txt to
-## tell protobuf how to hide things that don't specifically need to be exported
-#list(APPEND DALI_EXCLUDES libprotobuf.a)
+# hide things from the protobuf, all we export is only is API generated from our proto files
+list(APPEND DALI_EXCLUDES libprotobuf.a)
+
+
+##################################################################
+# FFmpeg
+##################################################################
+
+include(CheckStructHasMember)
+include(CheckTypeSize)
+
+set(FFMPEG_ROOT_DIR "" CACHE PATH "Folder contains FFmeg")
+
+find_package(PkgConfig REQUIRED)
+foreach(m avformat avcodec avfilter avutil)
+    # We do a find_library only if FFMPEG_ROOT_DIR is provided
+    if(NOT FFMPEG_ROOT_DIR)
+      string(TOUPPER ${m} M)
+      pkg_check_modules(${m} REQUIRED lib${m})
+      list(APPEND FFmpeg_LIBS ${m})
+    else()
+      find_library(FFmpeg_Lib ${m}
+            PATHS ${FFMPEG_ROOT_DIR}
+            PATH_SUFFIXES lib lib64
+            NO_DEFAULT_PATH)
+      list(APPEND FFmpeg_LIBS ${FFmpeg_Lib})
+      message(STATUS ${m})
+    endif()
+endforeach(m)
+
+include_directories(${avformat_INCLUDE_DIRS})
+list(APPEND DALI_LIBS ${avformat_LIBRARIES})
+CHECK_STRUCT_HAS_MEMBER("struct AVStream" codecpar libavformat/avformat.h HAVE_AVSTREAM_CODECPAR LANGUAGE C)
+set(CMAKE_EXTRA_INCLUDE_FILES libavcodec/avcodec.h)
+CHECK_TYPE_SIZE("AVBSFContext" AVBSFCONTEXT LANGUAGE CXX)
+
+list(APPEND DALI_LIBS ${FFmpeg_LIBS})
+
+##################################################################
+# Exclude stdlib
+##################################################################
+list(APPEND DALI_EXCLUDES libsupc++.a;libstdc++.a;libstdc++_nonshared.a;)

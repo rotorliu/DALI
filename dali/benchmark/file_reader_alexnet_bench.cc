@@ -36,7 +36,7 @@ BENCHMARK_DEFINE_F(FileReaderAlexnet, CaffePipe)(benchmark::State& st) { // NOLI
   Pipeline pipe(
       batch_size,
       num_thread,
-      0, -1, pipelined,
+      0, -1, pipelined, 2,
       async);
 
   dali::string list_root(std::getenv("DALI_TEST_FILE_READER_LIST_ROOT"));
@@ -80,7 +80,7 @@ BENCHMARK_DEFINE_F(FileReaderAlexnet, CaffePipe)(benchmark::State& st) { // NOLI
       .AddArg("device", "cpu")
       .AddArg("resize_x", 256)
       .AddArg("resize_y", 256)
-      .AddArg("crop", vector<int>{224, 224})
+      .AddArg("crop", vector<float>{224, 224})
       .AddArg("mirror_prob", 0.5f)
       .AddInput("images", "cpu")
       .AddArgumentInput("crop_pos_x", "uniform1")
